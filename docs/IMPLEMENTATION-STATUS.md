@@ -1,6 +1,16 @@
 # 로컬 개발 프리뷰 상태
 
-기록일: 2026-09-08. 이 문서는 설계상 목표가 아니라 현재 구현과 실제 검증 경계를 기록한다. 전체 서비스 완성을 의미하지 않는다.
+기록일: 2026-09-09. 이 문서는 설계상 목표가 아니라 현재 구현과 실제 검증 경계를 기록한다. 전체 서비스 완성을 의미하지 않는다.
+
+## 2026-09-09 수동 키 등록 후속 작업
+
+- OpenAI 보안 발급 picker를 다시 호출했지만 `UNAUTHORIZED / oauth_token_endpoint_unauthorized` 재인증 오류로 열리지 않았다. 키를 발급하거나 실제 비밀 파일에 저장하지 않았다. 사용자가 직접 키를 발급해 `.env`에 추가하는 방식으로 전환했다.
+- `npm run credentials:import -- --from .env --provider openai --confirm-write`를 추가했다. `.env.local`과 Anthropic의 `ANTHROPIC_API_KEY`도 명시적으로 선택할 수 있다. 등록은 호스트에서 실행하며 provider는 비활성화 상태여야 한다.
+- 선택한 변수만 파싱해 암호화 저장소에 저장하고 provider 참조를 연결한다. env의 다른 변수를 프로세스에 주입하지 않으며 외부 전송·유료 허용·모델·사용자 설정을 변경하지 않는다. 같은 키는 no-op, 다른 키로 교체할 때만 `--replace`가 필요하다.
+- source/destination의 Git 제외·비추적, 소유권, owner-only 권한, symlink/hardlink, source 크기 제한을 검사한다. 목적지는 Docker/Next 빌드에서도 제외된 기본 `data/config`와 `data/master.key`로 제한한다. 원본 env 평문은 자동 삭제하지 않는다. importer는 새 암호화 항목을 staging한 뒤 설정 참조를 교체하며, 실패하면 이전 키와 참조는 유지되지만 사용하지 않는 암호화 항목이 남을 수 있다. 이전 항목의 자동 정리나 provider 측 키 폐기는 하지 않는다.
+- 검증: 수동 등록 회귀 14개를 포함해 **78개 통과 / 네이티브 PostgreSQL 1개 의도적 skip**. 타입·포맷 검사와 production Next.js build 통과, build 경계 검사 1,636개 text asset 통과. 실제 CLI 프로세스도 격리한 임시 Git 저장소와 synthetic 값만 사용해 실행했다. build 경계 검사는 금지 파일명·기존 bootstrap 비밀 값 범위이며 모든 API 키 유출을 일반적으로 증명하는 검사는 아니다.
+- 별도 Orca 보안 검토에서 저장 대상 권한/추적 여부와 Git-only ignore 경로의 빌드 포함 가능성을 발견해 수정했다. 독립 synthetic 6개 시나리오로 수정 결과를 재검증했고 확인된 보안 blocker 없이 검토를 마쳤다. 전체 앱 보안 감사나 실제 자격 증명 검증을 의미하지 않는다.
+- 기존 Compose 4개 서비스는 계속 실행 중이고 웹 liveness는 정상이다. 이번 변경은 호스트 CLI이므로 컨테이너를 재빌드하거나 교체하지 않았다. 실제 `.env`, `.env.local`, `secrets.enc.json`이 아직 없음을 파일 메타데이터로 확인했다. 실제 유료 API 호출·브라우저 재검증·네이티브 DB 재검증은 이번 후속 작업에서 수행하지 않았다.
 
 ## 구현된 기반
 
@@ -45,13 +55,13 @@
 - OpenAI, Claude, Google의 실제 유료 요청 또는 로컬 모델 다운로드/실행.
 - 외부 계정/논문 내용 업로드, 원격 Git push, main 릴리스.
 - 실제 비용 정확도, Google 번역 word alignment 품질, 전체 RAG/vector 파이프라인 완료 선언.
-- 설정 파일과 키 파일을 하나의 transaction으로 묶는 staged credential-reference 교체는 아직 구현하지 않았다. 현재는 각 파일의 원자적 교체와 credential revision 재검사로 이전 작업의 잘못된 키 사용을 차단하며, 설정 저장 실패 시 키 상태를 다시 확인해야 한다. 과거 키 버전의 복구는 제공하지 않는다.
+- 설정 화면의 키 변경은 여전히 키 파일과 설정 파일을 하나의 transaction으로 묶지 않는다. 수동 import CLI에만 새 암호화 항목을 먼저 저장하고 참조를 교체하는 순서를 추가했다. 완전한 다중 파일 transaction/복구 journal은 아니며 과거 키 버전 복원 UI는 없다. 모든 경로에서 credential revision과 provider snapshot 재검사로 이전 작업의 잘못된 키 사용을 차단한다.
 - 페이지 번역의 부모 job을 일괄 취소하는 기능은 공유 자식 job 처리 규칙이 완성되지 않아 명시적 501로 차단한다. 취소됐다고 표시하면서 자식 호출을 계속 실행하지 않는다. 개별 소유 job 취소 또는 설정의 번역 허용 해제를 사용한다. Google 요청은 현재 TextItem별 호출이며 batch 최적화도 남아 있다.
 - 기본 개발 레이아웃의 마스터 키는 Git/Docker에서 제외되는 `data/master.key`에 있다. 설계상의 저장소 바깥 별도 마스터 키 배치 및 백업/복구 절차는 아직 기본 Compose 경로로 일반화하지 않았다.
 
 ## 다음 구현 순서
 
-1. 키 발급 connector 재인증과 승인된 보안 저장 경로 확인. API smoke test는 작은 명시적 요청으로 제한한다.
+1. 사용자가 `thesis_parser_key`를 직접 발급해 `.env`에 추가한 뒤 명시적 import 또는 Configuration으로 등록한다. 재인증 후 보안 발급 connector를 다시 사용하는 방법도 남아 있다. API smoke test는 별도 유료/외부 설정과 작은 명시적 요청으로 제한한다.
 2. 실제 Google 번역에 문장 분할·alignment profile을 연결하고 다단/회전/수식 PDF 평가 fixture를 만든다.
 3. 로컬 embedding profile을 선택하고 Qdrant 색인/재색인 및 출처 기반 검색을 연결한다.
 4. 검색 근거를 사용하는 대화와 분석/reference/중요도 결과를 cache 및 analysis JSON에 연결한다.

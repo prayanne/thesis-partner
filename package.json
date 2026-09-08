@@ -20,7 +20,8 @@
     "test": "vitest run",
     "db:migrate": "tsx packages/db/src/migrate.ts",
     "db:seed": "tsx packages/db/src/seed.ts",
-    "setup:local": "tsx scripts/setup-local.ts"
+    "setup:local": "tsx scripts/setup-local.ts",
+    "credentials:import": "tsx scripts/import-credentials.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
