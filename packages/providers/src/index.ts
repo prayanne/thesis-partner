@@ -22,6 +22,7 @@ export * from "./google-translation";
 export * from "./policy";
 export * from "./registry";
 export * from "./sse";
+export * from "./model-profiles";
 export type * from "./types";
 
 export interface ProviderAdapterDependencies {

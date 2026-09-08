@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { api, send, errorText } from "../lib/api";
 import { ErrorState, Loading } from "./ui";
+import { FirstSetupLauncher } from "./first-setup";
 
 export function Workspace({ children }: { children: ReactNode }) {
   const path = usePathname();
@@ -158,6 +159,7 @@ export function Workspace({ children }: { children: ReactNode }) {
             Local
           </span>
         </div>
+        <FirstSetupLauncher />
         <main id="main-content">{children}</main>
       </div>
     </div>

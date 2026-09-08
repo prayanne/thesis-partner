@@ -2,7 +2,15 @@
 
 기록일: 2026-09-09. 이 문서는 설계상 목표가 아니라 현재 구현과 실제 검증 경계를 기록한다. 전체 서비스 완성을 의미하지 않는다.
 
-## 2026-09-09 수동 키 등록 후속 작업
+## 2026-09-09 PDF·모델 선택·첫 설정 후속 작업 — 최신
+
+- 설치된 Safari에서 PDF 오류를 Computer Use로 재현했다. PDF.js legacy build와 일치하는 worker, `getReader()` 기반 텍스트 추출로 브라우저 호환성 문제를 해결하고 실제 원문·페이지 전환·150% 확대를 확인했다. 원본 PDF는 변경하지 않았다.
+- 사용자가 등록한 기존 키를 재사용해 OpenAI를 `gpt-5.6-sol / high`로 활성화했다. 외부 AI·유료 AI만 허용하고 외부 번역·메타데이터는 계속 차단한다. 이는 API 키 과금이며 Codex 구독 인증 연동이 아니다.
+- 제공자 규격별 모델 select, 기능별 기본 모델, 메타데이터/추론 분리 검증, 설정 변경 시 검증 무효화, 첫 설정 팝업과 개발자 모드 재실행을 구현했다. 최초 진입이나 새로고침은 유료 추론을 자동 호출하지 않는다.
+- 실제 모델 목록에서 exact Sol 모델을 확인해 메타데이터 검증은 통과했다. 제한된 합성 추론 2회는 모두 응답 스트림 미완료였으며 성공으로 표시하지 않는다. 인식 가능한 실패 코드와 사용량이 없어 원인이나 비용을 추정하지 않는다. 추가 유료 진단은 별도 명시적 작업이다.
+- 최종 검증: source 171개 통과 + host native 1개 의도적 skip, 실제 PostgreSQL 1개 별도 통과, production Chromium 16개·WebKit 2개 통과, 타입·포맷·host/container build 통과. 자세한 증거와 한계는 [검증 기록](READER-SETUP-ACCEPTANCE.md)을 따른다.
+
+## 이전 작업 기록 — 수동 키 등록 기능
 
 - OpenAI 보안 발급 picker를 다시 호출했지만 `UNAUTHORIZED / oauth_token_endpoint_unauthorized` 재인증 오류로 열리지 않았다. 키를 발급하거나 실제 비밀 파일에 저장하지 않았다. 사용자가 직접 키를 발급해 `.env`에 추가하는 방식으로 전환했다.
 - `npm run credentials:import -- --from .env --provider openai --confirm-write`를 추가했다. `.env.local`과 Anthropic의 `ANTHROPIC_API_KEY`도 명시적으로 선택할 수 있다. 등록은 호스트에서 실행하며 provider는 비활성화 상태여야 한다.
@@ -17,10 +25,11 @@
 | 영역 | 현재 구현 | 남은 검증/구현 |
 | --- | --- | --- |
 | 실행 구성 | React/Next.js, PostgreSQL, Qdrant, durable worker, 4개 Compose 서비스 | 운영 백업/복원 훈련, 장시간 중단/복구 검증 |
-| 개인 정보 | 로컬 세션, Origin/Host 검사, scoped MCP 토큰, 암호화 키 저장, 설정 revision | OS/디스크 탈취 방어는 별도, 키 발급 연결 재인증 필요 |
+| 개인 정보 | 로컬 세션, Origin/Host 검사, scoped MCP 토큰, 암호화 키 저장, 설정 revision | OS/디스크 탈취 방어는 별도, 자동 키 발급 연결은 재인증 필요 |
 | 논문 관리 | 읽기 전용 PDF 마운트, hash 중복 검사, 메타데이터 수정/보관, 텍스트 추출 | 스캔 PDF OCR, 복잡한 다단/수식 읽기 순서 |
 | PDF 읽기 | PDF.js canvas/text layer, 항목 hash/UTF-16 anchor, 메모·읽기 위치 | 문장 재구성과 번역 단어 정렬 정확도 평가 |
-| 번역/생성 | Google/OpenAI/Claude/Ollama/LM Studio adapter, 캐시·명시적 refresh·job·취소/사용량 기반 | 실 API 검증, Google 문맥 품질, 인용 검증·계층 요약 |
+| 번역/생성 | Google/OpenAI/Claude/Ollama/LM Studio adapter, 캐시·명시적 refresh·job·취소/사용량 기반 | 실제 추론 성공 확인, Google 문맥 품질, 인용 검증·계층 요약 |
+| 초기 설정 | 유료/로컬 모델 select, 기능별 선택, 분리 검증, 첫 설정·개발자 replay | 미확인 모델의 추가 규격 profile, 실제 제공자별 추론 검증 |
 | 분석 JSON | revision별 구조화 snapshot, 원자적 파일 교체, partial 상태와 coverage | 실제 AI 관계/중요도/reference 추출 통합 |
 | Vector | Qdrant 컨테이너와 client adapter | embedding 생성·색인·재색인·실제 유사도 검색 전체 연결 |
 | 대화 | UI와 provider streaming adapter | 논문 RAG, 영속 대화 분기/재생성. 현재 요청은 명시적 501 |
@@ -31,7 +40,7 @@
 
 요약 요청은 선택 범위의 텍스트를 사용한다. 긴 논문을 자동으로 잘라 전체 분석으로 표시하지 않고 제한을 보고한다. 분석 JSON의 빈 relations/references는 해당 논문에 관계가 없다는 뜻이 아니라 아직 분석하지 않았다는 뜻이다. Qdrant 컨테이너가 실행 중인 것은 vector 기능 완성과 다르다.
 
-## 실제 확인한 증거
+## 기반 구현 당시 확인한 증거 — 최신 검증은 상단 참조
 
 - 최종 통합: `npm test` 64개 통과, 네이티브 PostgreSQL 테스트 1개는 기본 실행에서 의도적으로 제외하고 읽기 전용 Compose worker에서 별도로 통과. 최종 Compose production 웹 대상으로 Playwright 8개 시나리오 통과(5.5초).
 - 실행 상태: web/worker/postgres/qdrant 4개 서비스 구동. web·PostgreSQL healthcheck 정상, Qdrant `/readyz` 200, 웹만 `127.0.0.1:3000`에 publish. worker/Qdrant는 상시 healthcheck가 아니라 실행 상태와 별도 실제 작업/readyz로 확인했다.
@@ -51,8 +60,8 @@
 
 ## 이번에 하지 않은 일
 
-- OpenAI 키 `thesis_parser_key`의 발급/저장: setup connector가 재인증을 요구했고, 보안 로컬 저장 위치 확인도 승인 완료되지 않았다. 키가 발급됐다고 표시하지 않는다.
-- OpenAI, Claude, Google의 실제 유료 요청 또는 로컬 모델 다운로드/실행.
+- OpenAI 키 신규 발급/회전: setup connector의 자동 발급은 실패했으며, 이후 사용자가 직접 등록한 기존 키를 사용했다. 이번 작업에서 키를 새로 발급했다고 표시하지 않는다.
+- 성공한 실제 OpenAI 추론, Claude/Google 실제 유료 요청, 로컬 모델 다운로드/실행. OpenAI 제한 요청 2회의 미완료 결과는 상단과 검증 기록에 별도 보존한다.
 - 외부 계정/논문 내용 업로드, 원격 Git push, main 릴리스.
 - 실제 비용 정확도, Google 번역 word alignment 품질, 전체 RAG/vector 파이프라인 완료 선언.
 - 설정 화면의 키 변경은 여전히 키 파일과 설정 파일을 하나의 transaction으로 묶지 않는다. 수동 import CLI에만 새 암호화 항목을 먼저 저장하고 참조를 교체하는 순서를 추가했다. 완전한 다중 파일 transaction/복구 journal은 아니며 과거 키 버전 복원 UI는 없다. 모든 경로에서 credential revision과 provider snapshot 재검사로 이전 작업의 잘못된 키 사용을 차단한다.
@@ -61,7 +70,7 @@
 
 ## 다음 구현 순서
 
-1. 사용자가 `thesis_parser_key`를 직접 발급해 `.env`에 추가한 뒤 명시적 import 또는 Configuration으로 등록한다. 재인증 후 보안 발급 connector를 다시 사용하는 방법도 남아 있다. API smoke test는 별도 유료/외부 설정과 작은 명시적 요청으로 제한한다.
+1. 기존 키 등록과 Sol/high 설정은 완료했다. 추가 유료 진단을 명시적으로 진행할 경우 안전한 구조화 오류 정보로 실제 추론 미완료 원인을 조사한다. 근거 없이 키를 재발급하거나 모델·추론 강도·요청 한도를 바꾸지 않는다.
 2. 실제 Google 번역에 문장 분할·alignment profile을 연결하고 다단/회전/수식 PDF 평가 fixture를 만든다.
 3. 로컬 embedding profile을 선택하고 Qdrant 색인/재색인 및 출처 기반 검색을 연결한다.
 4. 검색 근거를 사용하는 대화와 분석/reference/중요도 결과를 cache 및 analysis JSON에 연결한다.

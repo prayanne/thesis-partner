@@ -5,6 +5,7 @@ import {
   readConfig,
   readCredential,
   refreshPrincipal,
+  resolveTaskModel,
   type Principal,
 } from "../../security/src";
 import { DomainError, canonical, hash, one, json, queueJob } from "./common";
@@ -49,6 +50,10 @@ export async function registerGeneration(
       ? "google-translation"
       : config.ai.defaults[operation as "summary" | "analysis"];
   const provider = config.providers.find((p) => p.id === providerId);
+  const modelSelection =
+    operation === "translation"
+      ? null
+      : resolveTaskModel(config, operation as "summary");
   const credentialRef =
     operation === "translation"
       ? "google-translation"
@@ -90,11 +95,15 @@ export async function registerGeneration(
     segments: segments.map((s) => ({ id: s.id, textHash: s.text_hash })),
     provider: provider ?? null,
     providerId,
+    modelSelection,
     credentialRevision,
     targetLanguage,
     promptVersion: "grounded-summary-v1",
     outputSchemaVersion: 1,
-    parameters: { maxOutputTokens: config.ai.maxOutputTokens },
+    parameters: {
+      maxOutputTokens: config.ai.maxOutputTokens,
+      reasoningEffort: modelSelection?.reasoningEffort,
+    },
   };
   const fingerprint = hash(canonical(snapshot));
   const authorizeExecution = () => {
@@ -272,6 +281,7 @@ export async function runGeneration(
   let usageId: string | undefined;
   let settled = false;
   let upstreamStarted = false;
+  let observedUsage: Row | undefined;
   let inspectedModel: import("../../providers/src/types").ModelInfo | undefined;
   const guardedFetch: typeof fetch = async (url, init) => {
     const currentPrincipal = await refreshPrincipal(principal);
@@ -326,7 +336,10 @@ export async function runGeneration(
       );
       if (
         !currentProvider ||
-        canonical(currentProvider) !== canonical(snapshot.provider)
+        canonical(currentProvider) !== canonical(snapshot.provider) ||
+        canonical(resolveTaskModel(currentConfig, snapshot.operation)) !==
+          canonical(snapshot.modelSelection) ||
+        currentConfig.ai.maxOutputTokens !== snapshot.parameters.maxOutputTokens
       )
         throw new DomainError(
           "INPUT_STALE",
@@ -380,7 +393,9 @@ export async function runGeneration(
     return (
       canonical(latest.providers.find((p) => p.id === snapshot.providerId)) ===
         canonical(snapshot.provider) &&
-      latest.ai.maxOutputTokens === snapshot.parameters.maxOutputTokens
+      latest.ai.maxOutputTokens === snapshot.parameters.maxOutputTokens &&
+      canonical(resolveTaskModel(latest, snapshot.operation)) ===
+        canonical(snapshot.modelSelection)
     );
   };
   try {
@@ -465,7 +480,8 @@ export async function runGeneration(
       );
     }
     const provider = config.providers.find((p) => p.id === snapshot.providerId);
-    if (!provider || !provider.enabled || !provider.modelId)
+    const selection = resolveTaskModel(config, snapshot.operation);
+    if (!provider || !provider.enabled || !selection?.modelId)
       throw new DomainError(
         "PROVIDER_NOT_CONFIGURED",
         "Select an enabled provider and model.",
@@ -473,6 +489,7 @@ export async function runGeneration(
       );
     if (
       canonical(provider) !== canonical(snapshot.provider) ||
+      canonical(selection) !== canonical(snapshot.modelSelection) ||
       config.ai.maxOutputTokens !== snapshot.parameters.maxOutputTokens
     )
       throw new DomainError(
@@ -491,8 +508,10 @@ export async function runGeneration(
     const adapter = providers.createProviderAdapter(
       {
         ...providerConfig,
+        modelId: selection.modelId,
+        reasoningEffort: selection.reasoningEffort,
         providerInstanceId,
-        modelRevision: providerConfig.modelRevision || undefined,
+        modelRevision: selection.modelRevision || undefined,
         embeddingModelId: providerConfig.embeddingModelId || undefined,
       },
       { fetch: guardedFetch },
@@ -514,9 +533,17 @@ export async function runGeneration(
       );
     const model =
       adapter.definition.executionLocation === "local"
-        ? await adapter.inspectModel(provider.modelId, { credential, signal })
+        ? await adapter.inspectModel(selection.modelId, { credential, signal })
         : undefined;
     inspectedModel = model;
+    providers.assertModelSelection(
+      provider.adapterId,
+      selection.modelId,
+      "summary",
+      selection.reasoningEffort,
+      model ? [model] : undefined,
+      false,
+    );
     providers.assertProviderCallAllowed(
       policy,
       { adapterId: provider.adapterId, enabled: provider.enabled },
@@ -539,7 +566,7 @@ export async function runGeneration(
       ...requestIdentity,
       scope: "ai",
       providerId: provider.id,
-      modelId: provider.modelId,
+      modelId: selection.modelId,
       timeZone: latestConfig.general.timeZone,
       estimateUsd: local ? 0 : null,
       monthlyLimitUsd: latestConfig.ai.monthlyBudgetUsd,
@@ -554,7 +581,8 @@ export async function runGeneration(
     let usage: Row | undefined;
     for await (const event of adapter.chat(
       {
-        modelId: provider.modelId,
+        modelId: selection.modelId,
+        reasoningEffort: selection.reasoningEffort,
         maxOutputTokens: config.ai.maxOutputTokens,
         messages: [
           {
@@ -568,10 +596,11 @@ export async function runGeneration(
       },
       { credential, signal },
     )) {
-      if (event.type === "usage") usage = event.usage;
+      if (event.type === "usage") observedUsage = usage = event.usage;
       if (event.type === "final") {
         final = event;
         usage = event.usage ?? usage;
+        observedUsage = usage;
       }
       if (event.type === "error") throw event.error;
       if (event.type === "abort")
@@ -605,8 +634,9 @@ export async function runGeneration(
       },
       {
         providerId: provider.id,
-        modelId: provider.modelId,
-        modelRevision: provider.modelRevision,
+        modelId: selection.modelId,
+        modelRevision: selection.modelRevision,
+        reasoningEffort: selection.reasoningEffort,
         paperRevisionId: snapshot.paperRevisionId,
         extractionRunId: snapshot.extractionRunId,
         providerRequestId: final.providerRequestId,
@@ -619,6 +649,7 @@ export async function runGeneration(
       await settleUsage(db, usageId, {
         status: upstreamStarted ? "outcome_unknown" : "not_sent",
         estimatedUsd: null,
+        usage: observedUsage,
       });
     throw error;
   }

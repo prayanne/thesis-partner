@@ -9,6 +9,7 @@
 - [초기 CS 커리큘럼·Wiki·실습 설계](docs/CURRICULUM.md)
 - [Git 브랜치·커밋·검증·릴리스 규칙](CONTRIBUTING.md)
 - [구현 상태·검증 범위·남은 작업](docs/IMPLEMENTATION-STATUS.md)
+- [PDF 뷰어·모델 선택·첫 설정 검증 결과](docs/READER-SETUP-ACCEPTANCE.md)
 
 기본 구성: React UI + Next.js API, PostgreSQL, 별도 Qdrant, background worker. OrbStack 위에서 Docker Compose로 구동하고 원본 PDF는 호스트 디렉터리를 마운트한다. Ollama·LM Studio는 PC에서 실행 중인 서비스를 연결한다.
 
@@ -49,6 +50,10 @@ docker --context orbstack compose stop
 
 기본 설정은 local-only이며 외부 AI·번역·유료 AI가 모두 꺼져 있다. Google은 공식 Cloud Translation Basic API를 사용한다. 무료 번역 웹페이지를 비공식으로 스크래핑하지 않는다. OpenAI API/Claude API는 웹 채팅 구독과 별도의 API 계정·과금 설정이 필요하다.
 
+처음 로그인하면 첫 설정 팝업에서 외부 전송 정책, 유료/로컬 제공자와 모델, 기능별 기본값을 순서대로 설정한다. 완료 또는 나중에 설정 상태는 로컬 설정 파일에 저장된다. **환경 설정 → 일반 · 읽기**에서 개발자 모드를 켜면 **첫 설정 다시 열기**로 기존 설정을 유지한 채 다시 테스트할 수 있다.
+
+**환경 설정 → AI 공급자**의 모델 선택창은 제공자별 API 규격과 확인한 모델 목록을 함께 사용한다. 지원 규격을 확인하지 못한 모델은 이유와 함께 선택을 제한한다. 저장한 설정의 메타데이터 검증과 실제 추론 검증은 별개다. 유료 추론 검증은 현재 설정의 메타데이터 검증 통과 후 명시적으로 실행하며, 최대 출력 512 토큰과 단일 요청으로 제한한다. 화면 조회·새로고침·팝업 재실행으로 유료 검증을 자동 실행하지 않는다.
+
 - `data/config/config.json`: 개인 환경 설정, revision 충돌 검사, API 키 원문 없음.
 - `data/config/secrets.enc.json`: 설정 화면에서 입력한 키의 AES-256-GCM 암호문. 상태만 조회 가능.
 - `data/master.key`: 암호화 마스터 키. 분실하면 암호문을 복호화할 수 없으며, 암호문과 함께 탈취되면 보호되지 않으므로 별도 안전한 백업이 필요하다.
@@ -78,7 +83,7 @@ npm run credentials:import -- --from .env --provider anthropic --confirm-write
 
 Ollama/LM Studio는 호스트 PC에서 실행한다. **컨테이너에서의 주소는 `http://host.docker.internal:11434/v1` / `http://host.docker.internal:1234/v1`** 이다. 호스트 개발 시에는 `127.0.0.1`을 사용한다. 기존 설정은 보존되므로 실행 방식을 바꾸면 Configuration에서 주소를 확인해야 한다. 로컬 서버도 cloud model/proxy/LM Link를 사용할 수 있으므로 해당 기능이 꺼져 있는지 확인한 후 로컬 격리를 확인한다. 주소 변경 후에는 다시 확인해야 한다.
 
-돈 단위 한도를 설정했는데 검증된 모델 가격 정보가 없으면 유료 요청을 차단한다. 비용을 임의로 추정해 한도를 지켰다고 표시하지 않는다. 실제 외부 provider/번역 호출은 아직 검증하지 않았다.
+돈 단위 한도를 설정했는데 검증된 모델 가격 정보가 없으면 유료 요청을 차단한다. 비용을 임의로 추정해 한도를 지켰다고 표시하지 않는다. 실제 OpenAI 모델 목록·제한된 추론 요청의 결과는 [검증 기록](docs/READER-SETUP-ACCEPTANCE.md)에 구분해서 기록한다. 다른 provider와 외부 번역의 실제 호출은 아직 검증하지 않았다.
 
 ## API와 MCP
 

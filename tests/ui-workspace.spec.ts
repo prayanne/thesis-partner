@@ -9,6 +9,12 @@ let wikiId = "";
 let curriculumId = "";
 const runtimeErrors: string[] = [];
 
+test.afterEach(async ({ page }) => {
+  await page.request.delete(`${base}/api/v1/session`, {
+    headers: { Origin: base },
+  });
+});
+
 async function login(page: Page) {
   const token = (
     await readFile(
@@ -276,10 +282,13 @@ test("dynamic lesson blocks, real study, submission and versioned completion", a
   await expect(page.getByText(/이전 학습 버전/).first()).toBeVisible();
 });
 
-test("configuration tabs preserve safe policies and credentials are write-only", async ({
+test("configuration tabs preserve saved policies and credentials are write-only", async ({
   page,
 }) => {
   await login(page);
+  const savedConfig = (
+    await (await page.request.get(`${base}/api/v1/config`)).json()
+  ).data;
   await page.goto("/settings");
   await expect(
     page.getByRole("heading", { name: "나의 읽기 환경", exact: true }),
@@ -295,7 +304,9 @@ test("configuration tabs preserve safe policies and credentials are write-only",
   await expect(
     page.getByRole("heading", { name: "OpenAI", exact: true }),
   ).toBeVisible();
-  await expect(page.getByLabel("유료 AI 사용 허용")).not.toBeChecked();
+  await expect(page.getByLabel("유료 AI 사용 허용")).toBeChecked({
+    checked: savedConfig.ai.paidAiEnabled,
+  });
   expect(
     await page
       .locator(".credential-form input")
@@ -311,10 +322,12 @@ test("configuration tabs preserve safe policies and credentials are write-only",
   await page
     .getByRole("button", { name: "연결 · 사용 한도", exact: true })
     .click();
-  await expect(page.getByLabel("로컬 전용 모드")).toBeChecked();
+  await expect(page.getByLabel("로컬 전용 모드")).toBeChecked({
+    checked: savedConfig.network.localOnly,
+  });
   await expect(
     page.getByLabel("외부 AI 연결 허용", { exact: false }),
-  ).not.toBeChecked();
+  ).toBeChecked({ checked: savedConfig.network.allowExternalAi });
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -512,4 +525,5 @@ test.afterAll(async ({ request }) => {
       });
     }
   }
+  await request.delete(`${base}/api/v1/session`, { headers: { Origin: base } });
 });

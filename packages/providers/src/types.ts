@@ -5,6 +5,9 @@ export type AdapterId = AiAdapterId | TranslationAdapterId;
 export type BillingClass = "paid" | "no_api_charge" | "free_tier" | "unknown";
 export type ExecutionLocation = "local" | "remote" | "unknown";
 export type CapabilitySupport = "supported" | "unsupported" | "unknown";
+export type ReasoningEffort =
+  "none" | "low" | "medium" | "high" | "xhigh" | "max";
+export type AiFunction = "summary" | "chat" | "analysis" | "embedding";
 
 export interface ProviderCapabilities {
   chat: boolean;
@@ -58,6 +61,7 @@ export interface ProviderConfig {
   modelId?: string;
   modelRevision?: string;
   embeddingModelId?: string;
+  reasoningEffort?: ReasoningEffort;
   credentialRef?: string;
 }
 
@@ -93,6 +97,8 @@ export interface ChatRequest {
   messages: readonly ChatMessage[];
   maxOutputTokens: number;
   temperature?: number;
+  reasoningEffort?: ReasoningEffort;
+  serviceTier?: "default";
   requestIdentity: RequestIdentity;
 }
 
@@ -102,6 +108,7 @@ export interface NormalizedUsage {
   totalTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  reasoningTokens?: number;
   /** Vendor response retained for auditing; it must never include credentials. */
   raw: Readonly<Record<string, unknown>>;
 }
