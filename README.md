@@ -54,7 +54,27 @@ docker --context orbstack compose stop
 - `data/master.key`: 암호화 마스터 키. 분실하면 암호문을 복호화할 수 없으며, 암호문과 함께 탈취되면 보호되지 않으므로 별도 안전한 백업이 필요하다.
 - `data/bootstrap-token`, `data/postgres-password`: 최초 실행용 로컬 비밀 파일. 생성 시 파일 권한 0600.
 
-개인 파일, PDF, DB, 분석 결과와 모델 파일은 Git 및 Docker build context에서 제외한다. `.env.example`은 비밀 값 없는 경로 예시일 뿐이며, 실제 `.env.local`이나 API 키를 자동 생성하지 않는다. 설정에서 키를 바꿔도 이전 세대의 작업에 새 키를 조용히 적용하지 않는다.
+개인 파일, PDF, DB, 분석 결과와 모델 파일은 Git 및 Docker build context에서 제외한다. `.env.example`은 비밀 값 없는 경로·키 변수 예시이며 실제 `.env`/`.env.local`이나 API 키를 자동 생성하지 않는다. 설정에서 키를 바꿔도 이전 세대의 작업에 새 키를 조용히 적용하지 않는다.
+
+### 직접 발급한 API 키를 `.env`에서 등록
+
+OpenAI 키 발급 연결이 재인증 오류로 실패하면 직접 키를 발급해 등록할 수 있다. 키 이름은 `thesis_parser_key`, 로컬 변수 이름은 `OPENAI_API_KEY`를 사용한다. 이름과 실제 비밀 값은 서로 다르다. Claude는 별도로 발급한 키를 `ANTHROPIC_API_KEY`에 저장한다. 키 원문을 채팅·터미널 명령 인자에 붙이지 않는다.
+
+1. 저장소 루트의 **Git에서 제외된 `.env`** 파일을 로컬 편집기로 만들고 파일 권한을 `chmod 600 .env`로 제한한다. `OPENAI_API_KEY=`의 오른쪽에 실제 키를 입력한다. `.env.example`은 추적되는 공개 예시이므로 거기에 실제 값을 저장하지 않는다.
+2. Configuration에서 해당 provider를 **비활성화하고 저장**한다. 처음 실행한 기본 상태는 이미 비활성화되어 있다.
+3. **호스트 PC의 저장소 루트**에서 아래 명령을 실행한다. `--confirm-write`는 암호화 저장소와 설정 참조를 갱신한다는 명시적 확인이다. 먼저 `npm run setup:local`을 완료한 기본 private `data/` 레이아웃을 사용한다.
+
+```sh
+npm run credentials:import -- --from .env --provider openai --confirm-write
+# Claude를 별도로 등록할 때만 실행:
+npm run credentials:import -- --from .env --provider anthropic --confirm-write
+```
+
+`.env.local`을 사용했다면 `--from .env.local`로 지정한다. 동일한 키의 재등록은 no-op이고, 다른 키로 교체할 때만 명령 끝에 `--replace`를 추가한다. 추적 중인 env 파일, 공개 권한 파일, 링크 파일, 64 KiB 초과 파일은 거부한다. 목적지는 Git/Docker/Next 빌드에서 이미 제외된 기본 `data/config`와 `data/master.key`로 제한하며 소유자 전용 권한도 검사한다. Git ignore만으로 빌드 제외가 보장되지는 않으므로 다른 사용자 지정 배치는 별도 Configuration 구성을 사용한다. env 파일의 다른 변수를 프로세스에 주입하거나 셸 코드로 실행하지 않는다. 파서는 Node.js의 [공식 env 파싱 API](https://nodejs.org/api/environment_variables.html#programmatic-apis)를 사용한다.
+
+등록 결과는 기존 `data/config/secrets.enc.json`에 암호화되어 저장되고 `config.json`에는 키 원문 없이 참조만 연결된다. 현재 Compose web/worker가 이 디렉터리를 공유하므로 **컨테이너 재빌드나 재시작 없이 Configuration을 다시 불러오면** 등록 상태를 확인할 수 있다. 키 등록은 제공자 활성화, 외부 전송, 유료 허용, 모델 선택을 대신하지 않으며 기존 설정은 유지한다. 실제 생성 요청을 하려면 사용자가 Configuration에서 해당 항목을 별도로 설정해야 한다.
+
+이 명령은 키 발급이나 유효성 검사 요청을 하지 않으며 원본 `.env`를 자동 삭제하지 않는다. 따라서 원본은 여전히 평문이다. 등록 후 필요에 따라 키 항목을 직접 지우거나 소유자 전용 상태로 보관한다. 교체는 새 암호화 항목을 먼저 저장한 다음 설정 참조를 교체한다. 설정 저장 실패 시 이전 키·참조는 유지되지만 사용되지 않는 암호화 항목이 남을 수 있다. 이전 암호화 항목과 서버에서 발급한 이전 API 키도 자동 삭제/폐기하지 않는다.
 
 Ollama/LM Studio는 호스트 PC에서 실행한다. **컨테이너에서의 주소는 `http://host.docker.internal:11434/v1` / `http://host.docker.internal:1234/v1`** 이다. 호스트 개발 시에는 `127.0.0.1`을 사용한다. 기존 설정은 보존되므로 실행 방식을 바꾸면 Configuration에서 주소를 확인해야 한다. 로컬 서버도 cloud model/proxy/LM Link를 사용할 수 있으므로 해당 기능이 꺼져 있는지 확인한 후 로컬 격리를 확인한다. 주소 변경 후에는 다시 확인해야 한다.
 
@@ -77,4 +97,4 @@ npm run build
 
 `npm test`는 격리된 PGlite/모의 provider 테스트를 기본으로 한다. 네이티브 PostgreSQL 회귀 테스트는 `TEST_DATABASE_URL`이 있을 때만 실행하며, 테스트에서 만든 행을 트랜잭션 rollback으로 되돌린다. 개발 DB에서 `docker --context orbstack compose run --rm --no-deps worker test-native`로 실행할 수 있다. `tests/ui-workspace.spec.ts`는 실제 실행 중인 앱의 브라우저 검증이다. `scripts/smoke-local.ts`는 자격 증명 없는 local-only 개발 환경에서만 실행하는 검증이며 테스트 Wiki와 임시 MCP 토큰을 만들고 보관/폐기한다.
 
-개발은 `feature/local-service-foundation`에서 수행한다. 전체 기능을 검증하기 전에는 `main` 안정 버전으로 릴리스하지 않는다.
+기반 구현은 `feature/local-service-foundation`, 수동 키 등록은 `feature/manual-env-credentials`에서 수행하고 검증 후 `dev`에 통합한다. 전체 기능을 검증하기 전에는 `main` 안정 버전으로 릴리스하지 않는다.

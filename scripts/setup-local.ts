@@ -55,7 +55,7 @@ async function main() {
   console.log(`Browser login token file: ${paths.bootstrap}`);
   console.log(`Keep the master key separately backed up: ${paths.masterKey}`);
   console.log(
-    "API credentials remain unset. Enter them only through authenticated Configuration.",
+    "No API credentials were imported. Use authenticated Configuration or the explicit credentials:import command for a manually issued key.",
   );
 }
 main().catch(() => {

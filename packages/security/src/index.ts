@@ -521,6 +521,104 @@ export async function writeCredential(id: string, value: string) {
     return { configured: true, revision };
   });
 }
+
+/** Explicit, local-only import. Never called by web startup or a generation job. */
+export async function importProviderCredential(
+  providerId: "openai" | "anthropic",
+  value: string,
+  replace = false,
+) {
+  if (
+    !["openai", "anthropic"].includes(providerId) ||
+    value.length < 16 ||
+    value.length > 16384 ||
+    /\s|[\x00-\x1f\x7f]/.test(value)
+  )
+    throw new AppError(
+      "INVALID_IMPORT",
+      "A non-empty API credential is required.",
+    );
+  return locked(async () => {
+    const config = await readConfig();
+    const provider = config.providers.find((p) => p.id === providerId);
+    if (!provider || provider.adapterId !== providerId)
+      throw new AppError(
+        "PROVIDER_NOT_FOUND",
+        "The requested provider is not configured.",
+      );
+    if (provider.enabled)
+      throw new AppError(
+        "PROVIDER_ENABLED",
+        "Disable this provider in Configuration before importing a key.",
+        409,
+      );
+    const previousRef = provider.credentialRef ?? providerId;
+    const existing = await readCredential(previousRef);
+    if (existing === value && provider.credentialRef) {
+      return {
+        changed: false,
+        credentialRef: previousRef,
+        configRevision: config.revision,
+      };
+    }
+    if (existing && existing !== value && !replace)
+      throw new AppError(
+        "CREDENTIAL_EXISTS",
+        "A different key is already configured. Use --replace only for an intentional rotation.",
+        409,
+      );
+
+    // Stage under a fresh identity: a failed config swap cannot invalidate the
+    // previously referenced key. Existing entries are deliberately retained.
+    let nextRef = previousRef;
+    if (existing !== value) {
+      const key = await masterKey();
+      const store = await secretStore();
+      nextRef = `${providerId}-${randomBytes(12).toString("hex")}`;
+      const revision = randomBytes(16).toString("hex");
+      const iv = randomBytes(12);
+      const cipher = createCipheriv("aes-256-gcm", key, iv);
+      cipher.setAAD(Buffer.from(`thesis-partner:1:${nextRef}:${revision}`));
+      store.entries[nextRef] = {
+        revision,
+        iv: iv.toString("base64"),
+        ciphertext: Buffer.concat([
+          cipher.update(value, "utf8"),
+          cipher.final(),
+        ]).toString("base64"),
+        tag: cipher.getAuthTag().toString("base64"),
+      };
+      await atomicPrivateWrite(
+        path.join(runtimePaths().config, "secrets.enc.json"),
+        JSON.stringify(store, null, 2) + "\n",
+      );
+    }
+    const next = validateConfig({
+      ...config,
+      revision: config.revision + 1,
+      providers: config.providers.map((p) =>
+        p.id === providerId ? { ...p, credentialRef: nextRef } : p,
+      ),
+    });
+    try {
+      await atomicPrivateWrite(
+        path.join(runtimePaths().config, "config.json"),
+        JSON.stringify(next, null, 2) + "\n",
+      );
+    } catch {
+      throw new AppError(
+        "IMPORT_INCOMPLETE",
+        "The configuration reference was not updated. The old key remains intact; a staged encrypted entry may remain. Check private file access before retrying.",
+        503,
+      );
+    }
+    return {
+      changed: true,
+      credentialRef: nextRef,
+      configRevision: next.revision,
+    };
+  });
+}
 export async function readCredential(
   id: string,
   expectedRevision?: string | null,
