@@ -1,0 +1,50 @@
+{
+  "name": "thesis-partner",
+  "version": "0.1.0-dev",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "predev": "node scripts/prepare-pdf-worker.mjs",
+    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev apps/web --hostname 127.0.0.1",
+    "prebuild": "node scripts/prepare-pdf-worker.mjs",
+    "build": "NEXT_TELEMETRY_DISABLED=1 next build apps/web",
+    "postbuild": "node scripts/verify-build-boundary.mjs",
+    "start": "next start apps/web --hostname 127.0.0.1",
+    "worker": "tsx apps/worker/src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write apps/web/src apps/worker/src packages/contracts/src packages/db/src packages/domain/src packages/mcp/src packages/providers/src packages/security/src scripts tests/*.ts apps/web/next.config.ts apps/web/package.json apps/web/tsconfig.json tsconfig.json vitest.config.ts package.json compose.yaml",
+    "format:check": "prettier --check apps/web/src apps/worker/src packages/contracts/src packages/db/src packages/domain/src packages/mcp/src packages/providers/src packages/security/src scripts tests/*.ts apps/web/next.config.ts apps/web/package.json apps/web/tsconfig.json tsconfig.json vitest.config.ts package.json compose.yaml",
+    "test": "vitest run",
+    "db:migrate": "tsx packages/db/src/migrate.ts",
+    "db:seed": "tsx packages/db/src/seed.ts",
+    "setup:local": "tsx scripts/setup-local.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "drizzle-orm": "0.45.2",
+    "lucide-react": "1.42.0",
+    "next": "16.3.4",
+    "pdfjs-dist": "6.3.289",
+    "postgres": "3.4.9",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "prettier": "3.9.6",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "vitest": "5.0.0"
+  }
+}
