@@ -1,0 +1,28 @@
+# Dependencies and generated build/test output
+node_modules/
+.next/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Private environment; tracked examples contain placeholders only
+.env
+.env.*
+!.env.example
+!.env.*.example
+/config.json
+/secrets.enc.json
+/master.key
+/config/
+/.secrets/
+
+# Local runtime data and mounted source documents
+/library/
+/artifacts/
+/data/
+/backups/
+/model-cache/
+
+# Local logs and OS files
+*.log
+.DS_Store
