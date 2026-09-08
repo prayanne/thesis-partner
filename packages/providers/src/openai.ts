@@ -1,4 +1,10 @@
-import { ProviderError, isAbortError } from "./errors";
+import {
+  ProviderError,
+  isAbortError,
+  providerFailureDiagnostic,
+  type ProviderErrorCode,
+} from "./errors";
+import { assertModelSelection } from "./model-profiles";
 import {
   appendPath,
   fetchChecked,
@@ -23,6 +29,47 @@ import type {
   ProviderConfig,
   ProviderStreamEvent,
 } from "./types";
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function streamFailureCode(
+  type: string,
+  event: Record<string, unknown>,
+): ProviderErrorCode {
+  const response = record(event.response);
+  // Exact field/value allowlists only: messages, error types, status numbers and
+  // arbitrary incomplete reasons cannot establish a diagnosis.
+  if (
+    type === "response.incomplete" &&
+    record(response?.incomplete_details)?.reason === "max_output_tokens"
+  )
+    return "MAX_OUTPUT_TOKENS";
+  const code =
+    type === "error"
+      ? (event.code ?? record(event.error)?.code)
+      : record(response?.error)?.code;
+  switch (code) {
+    case "invalid_api_key":
+      return "UPSTREAM_AUTHENTICATION_ERROR";
+    case "insufficient_quota":
+      return "UPSTREAM_QUOTA_EXCEEDED";
+    case "rate_limit_exceeded":
+      return "UPSTREAM_RATE_LIMITED";
+    case "model_not_found":
+    case "permission_denied":
+      return "UPSTREAM_MODEL_ACCESS_DENIED";
+    case "server_error":
+      return "UPSTREAM_SERVER_ERROR";
+    case "invalid_request_error":
+      return "UPSTREAM_INVALID_REQUEST";
+    default:
+      return "UPSTREAM_STREAM_ERROR";
+  }
+}
 
 export class OpenAiResponsesAdapter implements ProviderAdapter {
   readonly definition = getProviderDefinition("openai");
@@ -85,6 +132,16 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
     let usage: NormalizedUsage | undefined;
     try {
       requireCredential("openai", context);
+      const reasoningEffort =
+        request.reasoningEffort ?? this.config.reasoningEffort;
+      assertModelSelection(
+        "openai",
+        request.modelId,
+        "chat",
+        reasoningEffort,
+        undefined,
+        false,
+      );
       const system = request.messages
         .filter((message) => message.role === "system")
         .map((message) => message.content)
@@ -100,6 +157,19 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
         store: false,
       };
       if (system) body.instructions = system;
+      if (reasoningEffort !== undefined)
+        body.reasoning = { effort: reasoningEffort };
+      if (request.serviceTier !== undefined)
+        body.service_tier = request.serviceTier;
+      if (
+        request.temperature !== undefined &&
+        request.modelId === "gpt-5.6-sol"
+      )
+        throw new ProviderError({
+          code: "CAPABILITY_UNSUPPORTED",
+          adapterId: "openai",
+          message: "Temperature is not enabled by this model profile.",
+        });
       if (request.temperature !== undefined)
         body.temperature = request.temperature;
       const headers = jsonHeaders(context.credential);
@@ -126,7 +196,9 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
         if (!message.data || message.data === "[DONE]") continue;
         let event: Record<string, unknown>;
         try {
-          event = JSON.parse(message.data) as Record<string, unknown>;
+          const parsed = record(JSON.parse(message.data));
+          if (!parsed) throw new Error("Expected a stream event object.");
+          event = parsed;
         } catch {
           throw new ProviderError({
             code: "UPSTREAM_STREAM_ERROR",
@@ -180,10 +252,7 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
           type === "response.failed" ||
           type === "response.incomplete"
         ) {
-          const failed =
-            event.response && typeof event.response === "object"
-              ? (event.response as Record<string, unknown>)
-              : undefined;
+          const failed = record(event.response);
           usage = normalizeOpenAiUsage(failed?.usage) ?? usage;
           if (usage)
             yield {
@@ -198,9 +267,8 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
             requestIdentity: request.requestIdentity,
             providerRequestId,
             error: new ProviderError({
-              code: "UPSTREAM_STREAM_ERROR",
+              ...providerFailureDiagnostic(streamFailureCode(type, event))!,
               adapterId: "openai",
-              message: "OpenAI did not complete the response stream.",
               requestIdentity: request.requestIdentity,
               providerRequestId,
             }),
@@ -254,7 +322,6 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
               message: "OpenAI stream failed.",
               requestIdentity: request.requestIdentity,
               providerRequestId,
-              cause: error,
             });
       yield {
         type: "error",

@@ -9,6 +9,14 @@ import type {
 
 const id = z.string().min(1).max(200);
 const optionalId = id.optional();
+export const reasoningEffortSchema = z.enum([
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
 
 export const providerConfigSchema = z
   .object({
@@ -20,6 +28,7 @@ export const providerConfigSchema = z
     modelRevision: optionalId,
     embeddingModelId: optionalId,
     credentialRef: optionalId,
+    reasoningEffort: reasoningEffortSchema.optional(),
   })
   .strict();
 

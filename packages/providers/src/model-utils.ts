@@ -46,6 +46,12 @@ export function normalizeOpenAiUsage(
     cacheReadTokens: inputDetails
       ? numberField(inputDetails, "cached_tokens")
       : undefined,
+    reasoningTokens: numberField(
+      objectField(raw, "output_tokens_details") ??
+        objectField(raw, "completion_tokens_details") ??
+        {},
+      "reasoning_tokens",
+    ),
     raw,
   };
 }
@@ -88,6 +94,7 @@ export function mergeUsage(
         : previous?.totalTokens),
     cacheReadTokens: current.cacheReadTokens ?? previous?.cacheReadTokens,
     cacheWriteTokens: current.cacheWriteTokens ?? previous?.cacheWriteTokens,
+    reasoningTokens: current.reasoningTokens ?? previous?.reasoningTokens,
     raw: { ...(previous?.raw ?? {}), ...current.raw },
   };
 }

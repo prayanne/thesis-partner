@@ -1,0 +1,250 @@
+.fields {
+  display: grid;
+  gap: 18px;
+}
+.callout {
+  padding: 15px 18px;
+  border: 1px solid #dae5d4;
+  border-radius: 9px;
+  background: #f0f5ec;
+  color: #506949;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.dialog {
+  width: min(920px, calc(100vw - 32px));
+  max-height: calc(100dvh - 40px);
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  padding: 0;
+  color: var(--ink);
+  box-shadow: 0 25px 100px #20302035;
+}
+.dialog::backdrop {
+  background: #192d2470;
+  backdrop-filter: blur(3px);
+}
+.dialogHeader {
+  padding: 26px 30px 18px;
+  border-bottom: 1px solid var(--line);
+  background: #fafbf7;
+}
+.dialogHeader h2 {
+  margin: 7px 0;
+  font-size: 23px;
+}
+.dialogHeader p {
+  margin: 0;
+  font-size: 12px;
+  color: #64725b;
+  line-height: 1.8;
+}
+.dialogBody {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  min-height: 340px;
+}
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 23px 15px;
+  border-right: 1px solid var(--line);
+  background: #fafbf7;
+}
+.steps button {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  padding: 12px 9px;
+  border-radius: 7px;
+  text-align: left;
+  font-size: 12px;
+  color: #6e7b65;
+}
+.steps button[aria-current="step"] {
+  background: #e7efdf;
+  color: #3e6535;
+  font-weight: 600;
+}
+.steps span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid #d5dfcc;
+  border-radius: 50%;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.stepContent {
+  min-width: 0;
+  padding: 24px 28px;
+}
+.stepContent h3 {
+  font-size: 17px;
+  margin: 0 0 8px;
+}
+.stepContent > p {
+  font-size: 12px;
+  line-height: 1.8;
+  color: #69765f;
+  margin-bottom: 20px;
+}
+.dialogFooter {
+  padding: 17px 24px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  background: #fafbf7;
+  flex-wrap: wrap;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.dialogMessage {
+  padding: 0 24px 16px;
+}
+.model {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.model select {
+  max-width: 100%;
+}
+.modelInfo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.badge {
+  font-size: 10px;
+  border: 1px solid #dbe4d5;
+  border-radius: 5px;
+  background: #f5f8f1;
+  padding: 3px 6px;
+  color: #57684c;
+}
+.warning {
+  color: #855122;
+  background: #fff7e9;
+  border: 1px solid #ead7b9;
+  padding: 10px 12px;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.gates {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.gates h4 {
+  margin: 0;
+  font-size: 13px;
+}
+.gate {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 13px;
+  display: grid;
+  gap: 8px;
+}
+.gate strong {
+  font-size: 12px;
+}
+.gate p {
+  font-size: 11px;
+  line-height: 1.8;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 11px;
+  line-height: 1.8;
+}
+.consent input {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+}
+.task {
+  display: grid;
+  gap: 14px;
+  padding: 17px 0;
+  border-bottom: 1px solid var(--line);
+}
+.task h3 {
+  font-size: 14px;
+  margin: 0;
+}
+.banner {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  justify-content: space-between;
+  background: #f5f8f0;
+  color: #617553;
+  font-size: 12px;
+}
+.developer {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+@media (max-width: 680px) {
+  .dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+  .dialogHeader {
+    padding: 19px;
+  }
+  .dialogBody {
+    grid-template-columns: 1fr;
+  }
+  .steps {
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .steps button {
+    white-space: nowrap;
+    padding: 8px;
+  }
+  .stepContent {
+    padding: 20px 17px;
+  }
+  .dialogFooter {
+    padding: 16px;
+  }
+  .dialogFooter > div {
+    flex-wrap: wrap;
+  }
+  .banner {
+    flex-wrap: wrap;
+  }
+}
+.wizardFields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}

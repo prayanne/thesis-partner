@@ -16,6 +16,7 @@ import {
   viewportRect,
 } from "../lib/pdf-mapping";
 import { ErrorState, Loading } from "./ui";
+import { readPdfTextContent } from "../lib/pdf-text-content";
 export interface PdfSelection {
   text: string;
   anchor: SourceAnchor | null;
@@ -52,6 +53,7 @@ export function PdfViewer({
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [viewport, setViewport] = useState<PageViewport | null>(null);
   const [ocr, setOcr] = useState(false);
   const stage = useRef<HTMLDivElement>(null);
@@ -72,8 +74,10 @@ export function PdfViewer({
     setError(null);
     setPdf(null);
     (async () => {
-      const pdfjs = await import("pdfjs-dist");
-      pdfjs.GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/pdf.worker.min.mjs";
+      // The modern build assumes new JS built-ins absent in current Safari.
+      // Use upstream's polyfilled build and its matching, versioned worker.
+      const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+      pdfjs.GlobalWorkerOptions.workerSrc = `/vendor/pdfjs/pdf.worker.legacy.min.mjs?v=${pdfjs.version}`;
       if (stopped) return;
       task = pdfjs.getDocument({
         url: `/api/v1/papers/${paperId}/file?revision=${encodeURIComponent(revisionId)}`,
@@ -101,10 +105,11 @@ export function PdfViewer({
       stopped = true;
       void task?.destroy();
     };
-  }, [paperId, revisionId]);
+  }, [paperId, revisionId, loadAttempt]);
   useEffect(() => {
     if (!pdf || !canvas.current || !layerElement.current) return;
     let stopped = false;
+    const controller = new AbortController();
     let render: RenderTask | undefined;
     let textLayer: TextLayer | undefined;
     setLoading(true);
@@ -133,7 +138,7 @@ export function PdfViewer({
       });
       await render.promise;
       if (stopped) return;
-      const content = await page.getTextContent();
+      const content = await readPdfTextContent(page, controller.signal);
       if (stopped) return;
       itemIndexes.current = [];
       items.current = [];
@@ -151,7 +156,7 @@ export function PdfViewer({
         "--total-scale-factor",
         String(scale * current.userUnit),
       );
-      const pdfjs = await import("pdfjs-dist");
+      const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
       if (stopped) return;
       textLayer = new pdfjs.TextLayer({
         textContentSource: content,
@@ -169,6 +174,7 @@ export function PdfViewer({
     });
     return () => {
       stopped = true;
+      controller.abort();
       render?.cancel();
       textLayer?.cancel();
       layer.current = null;
@@ -330,7 +336,9 @@ export function PdfViewer({
   return (
     <div className="pdf-scroll">
       {loading && <Loading label="PDF 페이지를 불러오는 중" />}
-      {error && <ErrorState error={error} />}{" "}
+      {error && (
+        <ErrorState error={error} retry={() => setLoadAttempt((n) => n + 1)} />
+      )}{" "}
       {ocr && !loading && (
         <div className="notice">
           텍스트를 찾을 수 없습니다. 스캔 문서라면 OCR이 필요합니다.

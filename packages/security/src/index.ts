@@ -10,6 +10,15 @@ import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, rename, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import {
+  assertModelSelection,
+  reasoningEffortSchema,
+  type AiFunction,
+} from "../../providers/src";
+import {
+  providerEvidenceSchema,
+  type ProviderEvidence,
+} from "./verification-types";
 
 export class AppError extends Error {
   constructor(
@@ -31,6 +40,7 @@ const providerSchema = z
     modelId: z.string().max(200),
     modelRevision: z.string().max(200),
     embeddingModelId: z.string().max(200),
+    reasoningEffort: reasoningEffortSchema.optional(),
     localIsolationVerified: z.boolean().default(false),
     credentialRef: z
       .string()
@@ -42,6 +52,7 @@ export const configSchema = z
   .object({
     schemaVersion: z.literal(1),
     revision: z.number().int().positive(),
+    verificationRevision: z.number().int().positive().default(1),
     general: z
       .object({
         displayName: z.string().max(80),
@@ -77,6 +88,48 @@ export const configSchema = z
             embedding: z.string().nullable(),
           })
           .strict(),
+        taskModels: z
+          .object({
+            summary: z
+              .object({
+                modelId: z.string().min(1).max(200),
+                reasoningEffort: reasoningEffortSchema.optional(),
+              })
+              .strict()
+              .nullable()
+              .default(null),
+            chat: z
+              .object({
+                modelId: z.string().min(1).max(200),
+                reasoningEffort: reasoningEffortSchema.optional(),
+              })
+              .strict()
+              .nullable()
+              .default(null),
+            analysis: z
+              .object({
+                modelId: z.string().min(1).max(200),
+                reasoningEffort: reasoningEffortSchema.optional(),
+              })
+              .strict()
+              .nullable()
+              .default(null),
+            embedding: z
+              .object({
+                modelId: z.string().min(1).max(200),
+                reasoningEffort: z.never().optional(),
+              })
+              .strict()
+              .nullable()
+              .default(null),
+          })
+          .strict()
+          .default({
+            summary: null,
+            chat: null,
+            analysis: null,
+            embedding: null,
+          }),
       })
       .strict(),
     translation: z
@@ -89,6 +142,17 @@ export const configSchema = z
     providers: z.array(providerSchema).max(16),
     library: z.object({ rootId: z.literal("papers") }).strict(),
     reading: z.object({ scale: z.number().min(0.25).max(4) }).strict(),
+    onboarding: z
+      .object({
+        completedAt: z.iso.datetime().nullable().default(null),
+        deferredAt: z.iso.datetime().nullable().default(null),
+      })
+      .strict()
+      .default({ completedAt: null, deferredAt: null }),
+    developer: z
+      .object({ enabled: z.boolean().default(false) })
+      .strict()
+      .default({ enabled: false }),
   })
   .strict();
 export type AppConfig = z.infer<typeof configSchema>;
@@ -133,6 +197,7 @@ export function defaultConfig(): AppConfig {
   return {
     schemaVersion: 1,
     revision: 1,
+    verificationRevision: 1,
     general: { displayName: "", language: "ko", timeZone: "Asia/Seoul" },
     network: {
       localOnly: true,
@@ -145,6 +210,12 @@ export function defaultConfig(): AppConfig {
       maxOutputTokens: 2048,
       monthlyBudgetUsd: null,
       defaults: { summary: null, chat: null, analysis: null, embedding: null },
+      taskModels: {
+        summary: null,
+        chat: null,
+        analysis: null,
+        embedding: null,
+      },
     },
     translation: {
       enabled: false,
@@ -183,6 +254,8 @@ export function defaultConfig(): AppConfig {
     })),
     library: { rootId: "papers" },
     reading: { scale: 1 },
+    onboarding: { completedAt: null, deferredAt: null },
+    developer: { enabled: false },
   };
 }
 
@@ -302,6 +375,43 @@ export async function readConfig(): Promise<AppConfig> {
     );
   }
 }
+export async function readProviderEvidence(
+  id: string,
+): Promise<ProviderEvidence> {
+  credentialId(id);
+  try {
+    return providerEvidenceSchema.parse(
+      JSON.parse(
+        await readPrivate(
+          path.join(runtimePaths().config, `provider-evidence-${id}.json`),
+        ),
+      ),
+    );
+  } catch (e) {
+    if (errno(e, "ENOENT")) return providerEvidenceSchema.parse({});
+    throw new AppError(
+      "EVIDENCE_INVALID",
+      "Saved provider verification evidence is invalid.",
+      503,
+    );
+  }
+}
+export async function updateProviderEvidence(
+  id: string,
+  update: (previous: ProviderEvidence) => ProviderEvidence,
+) {
+  credentialId(id);
+  return locked(async () => {
+    const next = providerEvidenceSchema.parse(
+      update(await readProviderEvidence(id)),
+    );
+    await atomicPrivateWrite(
+      path.join(runtimePaths().config, `provider-evidence-${id}.json`),
+      JSON.stringify(next, null, 2) + "\n",
+    );
+    return next;
+  });
+}
 function validateConfig(value: unknown): AppConfig {
   const parsed = configSchema.safeParse(value);
   if (!parsed.success)
@@ -362,11 +472,100 @@ function validateConfig(value: unknown): AppConfig {
         "Default provider does not exist.",
         422,
       );
+  try {
+    for (const provider of config.providers) {
+      if (provider.modelId)
+        assertModelSelection(
+          provider.adapterId,
+          provider.modelId,
+          "chat",
+          provider.reasoningEffort,
+          undefined,
+          false,
+        );
+      else if (provider.reasoningEffort)
+        throw new AppError(
+          "VALIDATION_ERROR",
+          "Select a model before setting reasoning effort.",
+          422,
+        );
+      if (provider.embeddingModelId)
+        assertModelSelection(
+          provider.adapterId,
+          provider.embeddingModelId,
+          "embedding",
+          undefined,
+          undefined,
+          false,
+        );
+    }
+    for (const operation of [
+      "summary",
+      "chat",
+      "analysis",
+      "embedding",
+    ] as const) {
+      const selection = resolveTaskModel(config, operation);
+      if (config.ai.taskModels[operation] && !selection)
+        throw new AppError(
+          "VALIDATION_ERROR",
+          "Select a provider before a task model override.",
+          422,
+        );
+      if (selection?.modelId)
+        assertModelSelection(
+          selection.adapterId,
+          selection.modelId,
+          operation,
+          selection.reasoningEffort,
+          undefined,
+          false,
+        );
+    }
+  } catch (e) {
+    if (e instanceof AppError) throw e;
+    throw new AppError(
+      "VALIDATION_ERROR",
+      e instanceof Error ? e.message : "Unsupported model selection.",
+      422,
+    );
+  }
   return config;
+}
+
+/** Resolve a functional override without mutating another function's provider defaults. */
+export function resolveTaskModel(
+  config: AppConfig,
+  operation: AiFunction,
+  providerId = config.ai.defaults[operation],
+) {
+  const provider = config.providers.find((p) => p.id === providerId);
+  if (!provider) return undefined;
+  const override =
+    config.ai.defaults[operation] === providerId
+      ? config.ai.taskModels[operation]
+      : null;
+  const modelId =
+    override?.modelId ??
+    (operation === "embedding" ? provider.embeddingModelId : provider.modelId);
+  const reasoningEffort =
+    operation === "embedding"
+      ? undefined
+      : override
+        ? override.reasoningEffort
+        : provider.reasoningEffort;
+  return {
+    providerId: provider.id,
+    adapterId: provider.adapterId,
+    modelId,
+    modelRevision: modelId === provider.modelId ? provider.modelRevision : "",
+    reasoningEffort,
+  };
 }
 function mergeObject(
   base: Record<string, unknown>,
   patch: Record<string, unknown>,
+  location: string[] = [],
 ): Record<string, unknown> {
   const merged = { ...base };
   for (const [key, value] of Object.entries(patch)) {
@@ -384,6 +583,11 @@ function mergeObject(
         "Reserved configuration field.",
         422,
       );
+    if (location.join(".") === "ai.taskModels") {
+      // A task selection is atomic; omitted effort restores the model API default.
+      merged[key] = value;
+      continue;
+    }
     merged[key] =
       value &&
       typeof value === "object" &&
@@ -394,6 +598,7 @@ function mergeObject(
         ? mergeObject(
             merged[key] as Record<string, unknown>,
             value as Record<string, unknown>,
+            [...location, key],
           )
         : value;
   }
@@ -427,6 +632,21 @@ export async function updateConfig(patch: unknown, expectedRevision: number) {
       )
         provider.localIsolationVerified = false;
     }
+    // A -> B -> A must not resurrect evidence from before the relevant change.
+    // Reader/onboarding-only edits preserve evidence; clients cannot set this epoch.
+    const verificationSettings = (c: AppConfig) =>
+      JSON.stringify({
+        providers: c.providers,
+        network: c.network,
+        paidAiEnabled: c.ai.paidAiEnabled,
+        monthlyBudgetUsd: c.ai.monthlyBudgetUsd,
+        defaults: c.ai.defaults,
+        taskModels: c.ai.taskModels,
+      });
+    next.verificationRevision =
+      verificationSettings(previous) === verificationSettings(next)
+        ? previous.verificationRevision
+        : next.revision;
     await atomicPrivateWrite(
       path.join(runtimePaths().config, "config.json"),
       JSON.stringify(next, null, 2) + "\n",

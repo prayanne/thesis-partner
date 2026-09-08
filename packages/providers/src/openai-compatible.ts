@@ -1,4 +1,5 @@
 import { ProviderError, isAbortError } from "./errors";
+import { assertModelSelection } from "./model-profiles";
 import {
   appendPath,
   fetchChecked,
@@ -214,6 +215,14 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     let usage: NormalizedUsage | undefined;
     let sawFinishReason = false;
     try {
+      assertModelSelection(
+        this.adapterId,
+        request.modelId,
+        "chat",
+        request.reasoningEffort ?? this.config.reasoningEffort,
+        undefined,
+        false,
+      );
       const body: Record<string, unknown> = {
         model: request.modelId,
         messages: request.messages,

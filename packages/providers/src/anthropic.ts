@@ -1,4 +1,5 @@
 import { ProviderError, isAbortError } from "./errors";
+import { assertModelSelection } from "./model-profiles";
 import {
   appendPath,
   fetchChecked,
@@ -119,6 +120,14 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
     let usage: NormalizedUsage | undefined;
     try {
       requireCredential("anthropic", context);
+      assertModelSelection(
+        "anthropic",
+        request.modelId,
+        "chat",
+        request.reasoningEffort ?? this.config.reasoningEffort,
+        undefined,
+        false,
+      );
       const system = request.messages
         .filter((message) => message.role === "system")
         .map((message) => message.content)

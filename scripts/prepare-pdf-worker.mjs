@@ -3,8 +3,8 @@ import path from "node:path";
 const destination = path.resolve("apps/web/public/vendor/pdfjs");
 await mkdir(destination, { recursive: true });
 await copyFile(
-  path.resolve("node_modules/pdfjs-dist/build/pdf.worker.min.mjs"),
-  path.join(destination, "pdf.worker.min.mjs"),
+  path.resolve("node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs"),
+  path.join(destination, "pdf.worker.legacy.min.mjs"),
 );
 for (const directory of ["cmaps", "standard_fonts", "wasm"])
   await cp(
