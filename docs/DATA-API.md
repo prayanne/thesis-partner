@@ -1,4 +1,4 @@
-# 데이터 모델·처리 계약 v0.1
+# 데이터 모델·처리 계약 v0.2
 
 이 문서는 [제품 계획](PLAN.md)의 구현 계약 초안이다. 실제 migration, OpenAPI 파일, MCP server, JSON Schema는 아직 구현하지 않았다. 예시의 ID·해시·점수는 설명용이며 실제 논문 분석 결과가 아니다.
 
@@ -38,6 +38,7 @@ PDF가 변경되면 이전 revision의 anchor를 새 파일에 그대로 그리�
 | index | `index_generations(id, embedding_profile_id, collection_name, state, corpus_manifest, activated_at)` | building/active/retired; 하나의 active generation, 전환 시 revision 검사 |
 | jobs/outbox | `jobs(id, kind, dedupe_key, state, input, generation, lease_owner, lease_until, attempts, error_code, progress)` | DB 변경 후 projection/export 작업을 같은 transaction에 기록 |
 | job 이벤트 | `job_events(job_id, sequence, type, payload, created_at)` | `(job_id, sequence)` unique. 종료 후 제한된 기간 보관 |
+| provider 사용량 | `provider_usage(id, job_id, logical_call_id, attempt, budget_scope, budget_period, provider_instance_id, model_id, status, reserved_usd?, estimated_usd?, input_tokens?, output_tokens?, cache_read_tokens?, cache_write_tokens?, characters?, raw_usage, pricing_revision, created_at)` | `(logical_call_id, attempt)` unique. upstream 요청별 예약·성공·불확실 비용 기록; 비밀값/본문 없음 |
 | Wiki | `wiki_pages(id, slug, title, current_revision_id, state)`; `wiki_revisions(id, wiki_id, revision, markdown, source_refs, origin)` | slug unique. 사용자 확정과 AI draft 구분. revision immutable |
 | 커리큘럼 | `curricula(id, title, description, revision)` | 단일 사용자 소유, 여러 curriculum 허용 |
 | 항목 | `curriculum_items(id, curriculum_id, parent_id?, kind, title, position, content_version, estimated_minutes)` | kind=section/lesson. parent는 같은 curriculum의 section으로 한 단계만 허용 |
@@ -87,7 +88,7 @@ erDiagram
 operation + inputSchemaVersion
 paperRevisionId + contentHash + extractionRunId + extractionVersion
 inputTextHash / selectedSegmentIds / targetLanguage
-providerInstanceId + credentialRevision + modelId + modelRevision
+providerInstanceId + adapterId + adapterVersion + credentialRevision + modelId + modelRevision
 promptVersion + generationParameters + outputSchemaVersion
 operation-specific context fingerprint
 ```
@@ -132,7 +133,7 @@ Google Basic 응답에 불변 backend model revision이 없을 수 있다. 이�
 
 429/명확한 일시 장애는 provider별 제한 안에서 지수 backoff·jitter를 적용한다. 요청이 provider에 전달된 뒤 연결이 끊겨 성공 여부를 모르는 경우는 `outcome_unknown`으로 보관한다. upstream idempotency가 없는 유료 호출의 exactly-once를 보장하거나 무제한 자동 재호출하지 않는다. 사용자에게 재요청 여부를 선택할 수 있는 실패 상태를 제공한다.
 
-job input에는 provider/모델/프롬프트 snapshot을 저장하지만 실행 시 최신 비밀값 폐기·권한·network policy를 다시 확인한다. 이미 폐기한 credential이나 뒤늦게 local-only로 바뀐 정책을 queued job이 우회하지 못하게 한다.
+job input에는 provider/adapter/모델/프롬프트 snapshot을 저장하지만 실행 시 최신 비밀값 폐기·권한·network policy·유료 사용 허용·예산을 다시 확인한다. 이미 폐기한 credential이나 뒤늦게 local-only로 바뀐 정책을 queued job이 우회하지 못하게 한다. 사용이 차단된 job은 이유와 함께 보류하고 provider를 자동으로 교체하지 않는다.
 
 ## 6. Qdrant·검색·재색인
 
@@ -234,9 +235,9 @@ JSON은 DB snapshot의 export이며 기본적으로 외부 파일 편집을 자�
 | 블록·자료 | `GET,POST /curriculum-items/{id}/blocks`; `PATCH,DELETE /lesson-blocks/{id}`; `GET,POST /resources`; `PATCH,DELETE /resources/{id}` | 동적 학습 자료 CRUD |
 | 자료 연결 | `PUT,DELETE /curriculum-items/{id}/resources/{resourceId}` | 동일 자료를 여러 lesson에 연결 |
 | 학습 | `GET,POST /study-sessions`; `GET,PATCH,DELETE /study-sessions/{id}`; `GET,POST /exercise-submissions`; `GET,PATCH,DELETE /exercise-submissions/{id}`; `PUT /curriculum-items/{id}/progress` | 시간·답안·산출물·완료·복습일; DELETE는 기록 archive |
-| 설정 | `GET,PATCH /configuration`; `POST /providers/{id}/tests`; `PUT,DELETE /credentials/{id}` | 일반 설정, capability/실행 test, 비밀값 write-only |
+| 설정 | `GET,PATCH /configuration`; `GET /provider-definitions`; `POST /providers/{id}/tests`; `PUT,DELETE /credentials/{id}` | 유료·무료 설정/허용, adapter registry, capability/실행 test, 비밀값 write-only |
 | 작업 | `GET /jobs/{id}`; `GET /jobs/{id}/events`; `POST /jobs/{id}/cancel`; `POST /jobs/{id}/retry` | 진행·stream·취소·재시도 |
-| 유지보수 | `GET /usage`; `POST /cache/evictions`; `POST /indexes/rebuilds`; `POST /backups`; `POST /restores/validate` | 사용량·명시적 정리·재색인·백업 검증 |
+| 유지보수 | `GET /usage?providerId=...&from=...&to=...`; `POST /cache/evictions`; `POST /indexes/rebuilds`; `POST /backups`; `POST /restores/validate` | provider별 사용량/예상액·명시적 정리·재색인·백업 검증 |
 | 통합 | `GET /openapi.json`; `POST /access-tokens`; `DELETE /access-tokens/{id}` | machine-readable 계약, scope token 발급·폐기 |
 
 표의 `/` 경로에는 모두 `/api/v1` prefix가 붙는다. 권한별 노출은 API에서 강제하고 UI hiding만으로 보호하지 않는다. provider URL/credential reference는 configuration을 통해 등록하고 매번 생성 요청에서 임의 URL을 받지 않는다. `GET` 조회가 cache miss 때문에 생성·유료 요청을 시작하지 않는다.
@@ -265,7 +266,7 @@ SDK 패키지 버전만 올려서는 modern protocol이 자동 활성화되지 �
 | --- | --- | --- |
 | 논문 조회 | `papers_search`, `papers_get`, `papers_get_segments`, `papers_get_analysis`, `papers_get_relations` | `library:read` |
 | 논문 관리 | `papers_import`, `papers_update`, `papers_archive`, `papers_restore`, `annotations_upsert`, `relations_update` | `library:write` |
-| 생성 요청 | `papers_translate`, `papers_summarize`, `paper_chat`, `papers_analyze` | `ai:run` + 해당 읽기 권한; 외부 호출은 `external:invoke`도 필요 |
+| 생성 요청 | `papers_translate`, `papers_summarize`, `paper_chat`, `papers_analyze` | `ai:run` + 해당 읽기 권한; 외부 호출은 `external:invoke`, 과금 호출은 `paid:invoke`도 필요 |
 | Wiki | `wiki_search`, `wiki_get`, `wiki_upsert`, `wiki_archive`, `wiki_restore` | `wiki:read` 또는 `wiki:write` |
 | 커리큘럼 | `curricula_get`, `curricula_create`, `curricula_update`, `curriculum_items_upsert`, `curriculum_items_archive`, `curriculum_items_reorder` | `learning:read` 또는 `learning:write` |
 | 학습 | `study_sessions_create`, `exercise_submissions_upsert`, `learning_progress_update` | `learning:write` |
@@ -277,6 +278,49 @@ MCP resource는 `paper://{id}/metadata`, `paper://{id}/analysis`, `paper://{id}/
 
 AI/번역 tool은 즉시 job handle 또는 cache 결과를 반환한다. Agent는 `jobs_get`으로 완료를 확인한다. tool requestId는 idempotency를 위한 앱 수준 필드이며 JSON-RPC id나 protocol session을 영속 job ID로 사용하지 않는다.
 
-최초 발급 token 기본값은 읽기 전용이다. 수정/생성 scope는 사용자가 설정에서 부여한다. 외부 전송 권한은 전역·논문별 정책보다 넓어질 수 없다. 같은 PC의 Agent라도 연동된 외부 모델에 tool 결과를 전달할 수 있으므로 configuration에 제공 데이터 범위가 보이게 한다. secret/config 관리·임의 path·쉘·SQL은 MCP에 노출하지 않는다.
+최초 발급 token 기본값은 읽기 전용이다. 수정/생성 scope는 사용자가 설정에서 부여한다. 과금 호출에는 `paid:invoke`를 추가로 요구하고 provider enable·예산·외부전송 정책도 충족해야 한다. OpenAI/Anthropic 생성·embedding에는 `paidAiEnabled`, Google 번역에는 별도 `translation.enabled`·번역 전송/한도 정책을 적용한다. `paidAiEnabled`를 끈 것만으로 Google 번역 설정이 바뀌지 않는다. 외부 전송 권한은 전역·논문별 정책보다 넓어질 수 없다. 같은 PC의 Agent라도 연동된 외부 모델에 tool 결과를 전달할 수 있으므로 configuration에 제공 데이터 범위가 보이게 한다. secret/config 관리·임의 path·쉘·SQL은 MCP에 노출하지 않는다.
 
 호스트 publish는 localhost에 한정한다. Origin이 있으면 allowlist를 검증하고, Origin이 없는 native client도 Host·Bearer token 검증을 거친다. 모든 외부 agent와의 호환을 추정하지 않고 실제 client 하나 이상에서 discovery·tools/list·조회·수정·권한 거절을 검증한다. 이전 MCP client는 필요할 때 별도 검증된 compatibility transport를 추가하며 v1/v2 메시지 규칙을 섞지 않는다.
+
+## 10. Provider·유료/무료 Configuration·사용량
+
+provider 정의는 코드 registry, 사용자 instance·선택·허용 정책은 versioned 로컬 config에 둔다. `GET /provider-definitions`는 secret 없는 설정 schema와 capability를 반환한다. FE는 이 정의로 유료/무료 목록과 필요한 입력을 그린다.
+
+| 필드 | 의미 |
+| --- | --- |
+| `adapterId`, `adapterVersion` | OpenAI Responses / Anthropic Messages / Ollama / LM Studio 구현 식별 |
+| `providerInstanceId` | 같은 adapter의 설정 인스턴스; credential 원문과 무관한 ID |
+| `billingClass` | `paid`, `no_api_charge`, 향후 `free_tier`, `unknown`. 공식 provider 분류는 registry에서 결정 |
+| `executionLocation` | `local` 또는 `remote`; 무료 여부와 외부 전송 여부를 독립 판정 |
+| `capabilities` | chat, embedding, streaming, structured output 등 provider·model별 검증 결과 |
+| `endpoint`, `credentialRef` | 고정 cloud endpoint 또는 검증한 로컬 주소, 암호화 secret 참조 |
+| `enabled`, `modelId`, `modelRevision` | provider 활성화와 명시적 모델 선택. 구독 tier를 model ID로 사용하지 않음 |
+| `paidAiEnabled` | 유료 AI 사용 허용. provider 활성화·key 등록·network policy와 함께 판정 |
+| `defaults` | summary/chat/analysis/embedding별 provider instance와 model |
+| `usagePolicy` | 요청별 최대 출력량, AI/번역 scope별 optional 월간 예상 예산 USD·provider별 상한, 예산 경고 설정 |
+
+초기 `paid` AI adapter는 OpenAI·Anthropic 두 개이며 `no_api_charge/local`은 검증된 Ollama·LM Studio local 모델이다. Google Translation은 별도의 `paid/remote/translation` 정의다. trial credit이나 provider prompt cache 할인은 무료 provider로 분류를 바꾸지 않는다. 미래 free-tier cloud도 remote 정책을 적용하고 한도 초과 시 유료로 조용히 전환하지 않는다.
+
+`paidAiEnabled`는 유료 AI 생성·embedding에만 적용하며 Google 번역은 `translation.enabled`와 별도 번역 예산으로 판정한다. 공통 local-only/논문별 외부전송 제외 정책은 둘보다 우선한다. 서버는 실행 operation과 registry의 과금 분류로 이 정책을 선택하며 FE가 전달한 무료/유료 문자열을 신뢰하지 않는다.
+
+공통 계약은 `listModels`, `inspectModel`, `chat`, capability가 있는 경우 `embed`, `testConnection`이다. 출력은 text·검증된 citation·정규화 usage·provider request ID·완료 상태다. 새 provider 추가에는 adapter, registry schema/capability, stream·오류·usage contract test가 필요하다. 도메인·REST/MCP·작업 UI에는 vendor별 분기를 늘리지 않는다.
+
+| Adapter | Native 규격·처리 |
+| --- | --- |
+| OpenAI | `POST /v1/responses`, Bearer key, `store:false`, `stream:true`. 필요 context는 로컬 DB에서 구성. `/v1/embeddings`는 별도 모델 capability |
+| Anthropic | `POST /v1/messages`, `x-api-key`, `anthropic-version: 2023-06-01`; system과 messages 변환, `max_tokens` 제한, `stream:true`; embedding 미지원 |
+| Ollama/LM Studio | 기존 `/v1/chat/completions`, `/v1/embeddings`와 native model inspection. local 여부를 모델까지 검증 |
+
+OpenAI Responses와 Anthropic Messages를 각각 지원하는 것이 이번 첫 범위다. 모든 provider를 OpenAI-compatible payload로 취급하지 않는다. 실제 요청의 모델별 허용 파라미터·응답 shape는 구현 시 공식 SDK patch와 contract test로 고정한다. [OpenAI Responses](https://developers.openai.com/api/docs/guides/migrate-to-responses), [Anthropic API](https://platform.claude.com/docs/en/api/overview)
+
+사용량은 provider 최종값과 원본 usage를 보관한다. `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`의 포함 관계는 provider마다 다르므로 adapter가 비용용 항목을 별도로 정규화하고 중복 합산하지 않는다. Anthropic stream의 누적 usage를 delta마다 더하지 않는다. stream error·취소에도 사용량이 있을 수 있으므로 완결 결과 cache 여부와 비용 기록은 독립이다. [Anthropic stream](https://platform.claude.com/docs/en/build-with-claude/streaming)
+
+앱 cache hit는 provider attempt·사용량 예약을 만들지 않는다. 생성 요청은 cache miss/refresh이고 최신 정책을 통과한 경우에만 provider 호출 직전 예상액을 예약한다. 한 job에 section 요약·종합 요약처럼 여러 upstream 호출이 있을 수 있으므로 각 호출에 영속 `logical_call_id`를 부여하고 `(logical_call_id, attempt)`별로 한 번 예약·정산한다. 한 upstream batch에 여러 segment를 보내는 경우는 실제 batch 호출 하나로 계수한다.
+
+예산 scope는 `ai`와 `translation`으로 분리한다. 예약 transaction은 `(scope, month)` 전체 예산 잠금 → `(scope, month, provider)` 잠금 순서로 검사·예약하여 OpenAI와 Anthropic의 동시 호출도 공통 AI 월 예산을 우회하지 못하게 한다. 재시도마다 이 검사를 수행한다. 월 경계는 사용자가 저장한 timezone을 기준으로 하되 호출 예약 시 budget_period·기준 timezone을 고정하여 진행 중 설정 변경으로 예약이 사라지지 않게 한다. 기록 시각은 UTC로 남긴다.
+
+요청 결과를 받으면 예약액을 실제 usage 기반 추정액으로 정산한다. usage 미수신·outcome_unknown은 예약을 보수적으로 유지하고 `비용 미확정`으로 표시한다. 명확히 전송하지 않은 실패만 예약을 해제한다. 재시도는 새 attempt로 별도 예약하며 idempotency가 없는 upstream에서 비용이 한 번만 청구된다고 보장하지 않는다.
+
+가격표는 모델·통화·단가·기준일을 가진 작은 versioned 자료다. 앱이 추정한 비용과 provider의 실제 청구액을 구별하고 다른 앱에서 사용한 비용은 포함하지 않는다. 금액 제한을 설정했는데 가격 정보가 없으면 `가격 정보 필요`로 보류하며 0원으로 통과시키지 않는다. 로컬 모델은 API 요금 0으로 표시하되 실행 시간 등 자원 사용은 따로 기록할 수 있다. 일반 계정 관리용 별도 admin key나 외부 billing dashboard 통합은 v1에 넣지 않는다.
+
+새 provider·model·schema를 테스트하는 자동 검수는 mock HTTP와 고정 fixture를 기본으로 한다. 실제 유료 smoke test는 설정된 key·허용·요청 상한 안에서만 명시적으로 실행하고 Git/CI에 key를 넣지 않는다. 앱의 유료 기능 지원 허용을 테스트마다 무제한 비용 발생 허용으로 해석하지 않는다.

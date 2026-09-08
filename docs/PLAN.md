@@ -1,6 +1,8 @@
-# Thesis Partner — 제품 및 구현 계획 v0.1
+# Thesis Partner — 제품 및 구현 계획 v0.2
 
 작성일: 2026-09-08. 상태: 구현 전 설계안. 공식 문서 확인과 설계 결정을 구분하며, 성능·정확도 수치는 아직 측정하지 않았다.
+
+v0.2 변경: 유료 AI를 OpenAI·Anthropic으로 한정하고 무료/로컬과의 Configuration 구분·호출 허용·사용량 정책을 추가했다. 개발 과정은 `main / dev / feature/* / hotfix/*` Git 전략을 따른다.
 
 ## 1. 목표와 범위
 
@@ -24,7 +26,7 @@
 | Vector DB | Qdrant, 독립 Compose 서비스 | 별도 vector DB 요구 충족. 논문·chunk 검색용 파생 인덱스 |
 | 비동기 처리 | Node worker + PostgreSQL jobs/outbox | 긴 PDF 처리·번역·요약을 HTTP 요청 수명에서 분리. 초기 Redis 없이 운영 |
 | 단어 정렬 | worker 내부 Python subprocess + SimAlign/mBERT 후보 | 새로운 서비스 없이 로컬 alignment. P0에서 CPU/한영 품질 검증 |
-| AI | provider adapter, cloud API key / Ollama / LM Studio | chat 모델과 embedding 모델을 각각 설정 |
+| AI | OpenAI Responses / Anthropic Messages / Ollama / LM Studio adapters | 유료·무료/로컬 구분. chat 모델과 embedding 모델을 각각 설정 |
 | 프로토콜 | REST + OpenAPI, MCP Streamable HTTP | 공유 DTO·서비스·권한 정책, 전송 형식은 각 표준 준수 |
 | 실행 | OrbStack + 표준 `docker compose` | macOS bind mount, named volume, host AI 연결 |
 
@@ -132,17 +134,24 @@ SimAlign의 multilingual contextual alignment를 1차 후보로 사용한다. wo
 
 채팅은 기본적으로 현재 논문만 검색한다. 본문 chunk의 keyword+vector 검색 결과와 인접 문맥을 context budget 안에서 넣는다. 전체 라이브러리는 사용자가 검색 범위를 바꾼 경우에만 사용한다. 근거가 없으면 논문에 근거가 없다고 답하고, 서버가 citation의 paper revision·chunk·quote 범위를 검증한다. 유효한 인용 링크만 PDF에 연결한다. DB에 저장된 대화가 기준이며 provider의 서버측 대화 세션에 의존하지 않는다.
 
-| Provider | 컨테이너에서 쓰는 기본 URL | 기본 규격 |
-| --- | --- | --- |
-| 외부 API | 사용자가 등록한 HTTPS endpoint | API key 기반 adapter, 초기 text Chat Completions 호환 규격 |
-| Ollama | `http://host.docker.internal:11434/v1` | `/chat/completions`, `/embeddings`, `/models` |
-| LM Studio | `http://host.docker.internal:1234/v1` | `/chat/completions`, `/embeddings`, `/models` |
+| Provider | Configuration 분류 | 기본 URL | 기본 규격 |
+| --- | --- | --- | --- |
+| OpenAI API — ChatGPT 계열 모델 | 유료 AI | `https://api.openai.com/v1` | Responses `/responses`; embedding `/embeddings`; 모델 `/models` |
+| Anthropic Claude API | 유료 AI | `https://api.anthropic.com/v1` | Messages `/messages`; 모델 `/models`; 자체 embedding 미지원 |
+| Ollama | 무료/로컬 AI | `http://host.docker.internal:11434/v1` | `/chat/completions`, `/embeddings`, `/models` |
+| LM Studio | 무료/로컬 AI | `http://host.docker.internal:1234/v1` | `/chat/completions`, `/embeddings`, `/models` |
+
+OpenAI는 신규 프로젝트에 권장되는 Responses API의 native adapter를 사용한다. API key Bearer 인증으로 호출하고, 이 앱이 대화 기록을 소유하므로 `store: false`와 로컬 context 구성을 기본으로 한다. 이것이 provider의 모든 운영 로그·prompt cache까지 보관되지 않는다는 뜻은 아니다. 앱에는 OpenAI API 모델·key·사용량을 설정하며 ChatGPT 웹 구독 상태를 API 사용 가능 여부나 크레딧으로 간주하지 않는다. [Responses 안내](https://developers.openai.com/api/docs/guides/migrate-to-responses), [데이터 제어](https://developers.openai.com/api/docs/guides/your-data), [API 과금](https://developers.openai.com/api/docs/pricing)
+
+Claude는 Anthropic Messages native adapter를 첫 버전에 포함한다. `x-api-key`와 `anthropic-version`을 사용하고 system/messages·stream·usage를 내부 계약으로 변환한다. Claude 웹 구독과 API 과금은 별도다. Anthropic은 자체 embedding 모델을 제공하지 않으므로 Claude를 선택해도 embedding은 Ollama/LM Studio 또는 OpenAI 중에서 따로 지정한다. [Messages API](https://platform.claude.com/docs/en/api/http/messages/create), [구독·API 구분](https://support.claude.com/en/articles/9876003-i-have-a-paid-claude-subscription-pro-max-team-or-enterprise-plans-why-do-i-have-to-pay-separately-to-use-the-claude-api-and-console), [Embedding 지원 범위](https://platform.claude.com/docs/en/build-with-claude/embeddings)
 
 두 로컬 서비스의 공통 호출 계약은 `listModels / inspectModel / chat / embed / testConnection`이다. Ollama의 `/api/tags`, `/api/show`와 LM Studio의 `/api/v1/models`는 capability와 모델 상세 확인에 추가로 사용한다. Ollama digest는 revision 식별에 이용할 수 있지만 LM Studio 모델 key·크기·quantization을 파일 내용 hash로 간주하지 않는다. LM Studio는 수동 `modelRevision`을 저장하고 모델 교체 시 변경·재색인을 안내한다. 지원 기능은 모델별로 다르므로 chat 모델을 embedding 모델로 자동 간주하지 않는다. [Ollama compatibility](https://docs.ollama.com/api/openai-compatibility), [Ollama models](https://docs.ollama.com/api/tags), [LM Studio compatibility](https://lmstudio.ai/docs/developer/openai-compat), [LM Studio models](https://lmstudio.ai/docs/developer/rest/list)
 
 로컬 Ollama는 기본 인증이 없으며 LM Studio는 설정한 Bearer token을 사용할 수 있다. configuration은 token을 선택적으로 저장한다. provider별 stream을 `delta / usage / done / error`로 정규화하고 완결 결과만 캐시한다. tool calling, vision, JSON schema 지원을 일괄 가정하지 않는다. JSON 생성은 서버 schema 검증을 통과해야 분석에 채택한다. [Ollama 인증](https://docs.ollama.com/api/authentication), [스트리밍](https://docs.ollama.com/api/streaming), [LM Studio 인증](https://lmstudio.ai/docs/developer/core/authentication)
 
-외부 API의 초기 지원 범위는 설정된 Chat Completions 호환 provider다. 모든 벤더의 고유 API를 첫 버전부터 지원한다고 약속하지 않는다. native vendor adapter는 같은 내부 계약으로 추후 추가한다. embedding provider는 별도로 선택할 수 있으며 기본 방향은 로컬 모델이다. 모델이 없으면 논문 저장·키워드 검색은 정상 동작하고 vector/AI 항목을 `설정 필요`로 둔다.
+외부 유료 AI의 초기 allowlist는 OpenAI·Anthropic 두 곳이다. Google Cloud Translation은 기존 번역 서비스로 별도 유지하며 이 AI provider 제한과 혼동하지 않는다. 임의 외부 Chat Completions URL이나 다른 vendor는 초기 설정에서 활성화하지 않는다. 확장은 새 adapter + capability/설정 schema + contract test를 등록하는 방식이고 도메인·FE 작업 컴포넌트는 그대로 재사용한다. `embed` 같은 미지원 기능은 capability로 제외한다. 초기부터 여러 vendor를 자동 탐색하거나 plugin marketplace를 만들지 않는다.
+
+embedding provider의 기본 방향은 로컬 모델이다. 모델이 없으면 논문 저장·키워드 검색은 정상 동작하고 vector/AI 항목을 `설정 필요`로 둔다. 로컬 장애·API rate limit을 이유로 다른 provider, 특히 무료/로컬에서 유료로 자동 전환하지 않는다. 모델 변경은 사용자가 저장한 설정이나 명시적 요청으로 수행하고 기존 캐시와 provenance를 구별한다.
 
 ## 7. 캐시와 명시적 재요청
 
@@ -193,6 +202,12 @@ Wiki는 Markdown + 검증된 수식 렌더링, revision, 논문 anchor, backlink
 
 설정 탭은 `일반/학습`, `라이브러리`, `번역`, `AI·embedding`, `저장·캐시`, `API·MCP`로 구성한다. 표시 이름·언어·관심 주제·읽기 기본값·모델 선택을 저장하고 재시작 후 복원한다. 개인용이므로 이메일·회원가입을 요구하지 않는다.
 
+`AI·embedding` 안에는 `유료 API`와 `무료/로컬 API`를 분리 표시한다. 유료 탭에는 OpenAI·Anthropic, 무료/로컬 탭에는 Ollama·LM Studio를 넣는다. 로컬의 무료 표시는 API 호출 과금 없음이라는 뜻이며 PC 자원 사용 비용까지 없다는 의미는 아니다. 무료 외부 API가 나중에 추가되어도 전송 위치와 과금 분류가 혼동되지 않도록 `billingClass`와 `executionLocation`을 별도 저장한다. 고정 vendor의 과금 분류를 사용자가 무료로 바꾸어 사용 제한을 우회할 수 없게 한다.
+
+유료 API 사용 기능을 허용한다. 신규 설치에서는 key가 없는 provider를 실행하지 않으며, 사용자가 key·모델과 `유료 AI 사용 허용`을 한 번 저장하면 설정 범위 안의 요청은 매번 재승인하지 않는다. provider별 활성화, 요약/채팅/분석 기본 모델, embedding 선택, 요청별 최대 출력량, 월간 예상 사용액 한도와 현재 사용량을 설정·조회한다. 사용자가 정한 예산값을 임의로 채우지 않으며 한도 미설정도 명확히 표시한다. API 목록/연결 확인과 실제 유료 추론 테스트를 구별한다.
+
+cache hit는 새 provider 사용량을 만들지 않고 앱의 refresh는 새 사용량을 발생시킬 수 있음을 표시한다. provider usage에 따른 토큰/문자 수, 로컬 캐시 재사용, 예상 금액을 구분한다. 가격표 기준일을 남기고 추정 불가를 0원으로 표시하지 않는다. 앱의 예상 예산은 이 앱에서 보낸 요청만 관리하며 provider 계정 전체의 실제 청구 상한으로 표시하지 않는다. Google 번역은 번역 설정에 별도 활성화·문자 사용량·한도를 둔다.
+
 일반 설정은 로컬 `config.json`, 비밀값은 `secrets.enc.json`에 저장한다. 비밀값은 별도 master key를 이용한 authenticated encryption으로 보호하고 master key는 저장소 밖의 파일을 Compose secret으로 read-only mount한다. `.env`에는 경로 같은 bootstrap 값만 두고 API key를 `NEXT_PUBLIC_*`, Git, 로그, 브라우저 영속 저장소에 넣지 않는다. 폴더 0700·민감 파일 0600을 기본으로 하고 컨테이너 사용자 읽기 권한을 맞춘다.
 
 일반 설정 파일이 기준이며, 설정 API는 schema 검증·revision 충돌 검사 후 atomic write한다. DB의 provider/config 요약은 projection으로만 사용한다. 비밀값의 신규 버전을 먼저 안전하게 기록한 후 config의 credential reference를 교체하며 실패하면 이전 참조를 유지한다. 구버전 비밀값 정리는 성공 이후에 한다. master key 분실 시 비밀값 복구가 불가능하므로 별도 보관 안내를 제공한다.
@@ -203,7 +218,7 @@ Google 번역과 외부 AI를 사용하면 해당 본문·질문이 외부로 �
 
 `local-only`에서는 기존 Google 번역 cache 열람과 로컬 AI를 사용할 수 있지만 새 Google 번역·외부 모델·온라인 자료 조회는 차단한다. 모델 최초 다운로드는 별도 준비 단계이며 오프라인 실행이 자동 다운로드를 유발하지 않게 한다. 로컬 URL의 Ollama도 cloud 모델을 쓸 수 있으므로 local-only 모델 선택에서 cloud 모델을 제외한다. 호스트의 cloud disable은 설정·환경 변수·로그 확인 안내와 P0 검증으로 확인하며, 모델 목록 API만으로 증명한다고 하지 않는다. 앱이 임의 호스트 AI 서버의 내부 재전송을 통제하는 것은 아니므로 지원·검증한 호스트 구성을 함께 기록한다. [Ollama FAQ](https://docs.ollama.com/faq)
 
-worker는 각 provider 호출·재시도 직전에 최신 전송 정책과 논문별 제외 설정을 다시 확인한다. local-only 전환 시 차단된 대기 작업은 보류하고 진행 중 외부 요청은 가능한 범위에서 중단한다. 이미 외부로 전송한 데이터를 회수하는 기능으로 표현하지 않는다.
+worker는 각 provider 호출·재시도 직전에 최신 전송 정책·유료 사용 허용·예산·논문별 제외 설정을 다시 확인한다. local-only 전환 또는 유료 사용 해제 시 차단된 대기 작업은 보류하고 진행 중 외부 요청은 가능한 범위에서 중단한다. 이미 외부로 전송한 데이터를 회수하거나 이미 발생한 요금을 취소하는 기능으로 표현하지 않는다.
 
 PDF·Wiki·외부 메타데이터·모델 출력은 데이터로 취급한다. PDF 내 스크립트나 임의 명령 실행, HTML/Markdown script 실행, 문서 안의 지시에 따른 tool 호출은 허용하지 않는다. 입력 root 밖의 경로·symlink 탈출, 미등록 provider URL·redirect를 거부한다. Origin/Host 검증, CSRF 방어, localhost binding을 적용한다. 이는 개인 PC와 로컬 파일을 다루는 핵심 구현 범위다.
 
@@ -225,7 +240,7 @@ MCP는 같은 Next.js 앱의 `/mcp`에서 제공한다. 공통 schema와 applica
 | --- | --- | --- |
 | P0 기술 검증 | PDF 좌표·한영 정렬 prototype, provider 연결, MCP discovery·시험 tool, 버전 고정 | 아래 핵심 불확실성에 실측 결과·선택 기록. prototype 결과를 구현으로 오인하지 않음 |
 | P1 로컬 앱·Reader | Compose 4서비스, migration, config, import, PDF, Google 번역, 단어·문장 hover, translation cache | 2단·회전·확대 샘플에서 anchor 검증; 정렬 정밀도/coverage 기준; 재시작 후 복원; 원본 무변경 |
-| P2 논문 AI | cloud/Ollama/LM Studio adapters, chunking, Qdrant retrieval, 요약·채팅·인용·캐시 | 각 provider 설정/실행; context별 cache 구분; 재생성·취소·실패 보존; citation 검증 |
+| P2 논문 AI | OpenAI/Anthropic/Ollama/LM Studio adapters, 유료·무료 설정, usage, chunking, Qdrant retrieval, 요약·채팅·인용·캐시 | 네 provider 설정/실행; 유료 정책·한도·capability; context별 cache; 재생성·실패 보존; citation 검증 |
 | P3 관계·분석 | reference·similarity·중요도, versioned analysis JSON, outbox·재색인 | 신규 논문이 기존 관계에 반영; 중단 후 재시도; vector/JSON revision 일치 |
 | P4 학습·Wiki | 동적 커리큘럼 CRUD, 7개 seed, Wiki revision, 실습 기록·진도 | UI/API에서 단원 추가·재정렬·archive·복구; 선수 cycle 방지; 이전 학습 기록 보존 |
 | P5 통합·Agent 연동 | MCP tools/resources, OpenAPI, backup/restore, 로컬 접근·통합 검수 | 실제 MCP client 조회/수정; 권한·외부전송 정책 동일; 빈 volume 복구 시나리오 |
@@ -245,6 +260,7 @@ P0에서 해결할 기술 항목:
 - 동일 PDF 재등록·이름 변경·내용 변경·원본 이동/누락 시 중복/오래된 highlight 방지.
 - 동일 번역을 두 번 요청해 provider 호출 횟수가 1회인지 확인; 앱 재생성은 1회 추가, F5는 추가 0회.
 - 채팅 parent/context/model 변경 시 cache miss, 동일 재전송 시 같은 결과·jobId 반환.
+- OpenAI/Anthropic native 요청·stream·usage 계약 검증. Anthropic embedding 미노출, 유료 사용 해제·예산 초과·로컬 실패에서 우회 호출 없음.
 - 중복 refresh·작업 완료 역전에서 최신 의도만 publish; 실패 시 이전 결과 유지.
 - 전체논문 번역과 현재 페이지/문장 재번역이 겹쳐도 최신 segment generation 유지. 합자·하이픈·surrogate pair·여러 text item에 걸친 단어의 offset round-trip 검증.
 - DB commit 이후 worker 종료/JSON 쓰기 실패/Qdrant 장애 뒤 outbox 재처리로 복구.
@@ -268,3 +284,11 @@ P0 결과 후 작업량을 재산정한다. 특히 단어 정렬과 PDF 읽기 �
 | 6 로컬 개인정보·config 보존 | §3·10 | P1·P5 |
 | 7 API·통일 계약·MCP | §11, DATA-API | P0·P1~P5 |
 | 작은 개인 PC scope | §1~3·9·12 | 전 단계 |
+| 추가: OpenAI·Claude 유료 API, 무료/로컬 구분·확장성 | §6·10, DATA-API provider/usage 계약 | P1~P2 |
+| 추가: Git main/dev/feature/hotfix 전략 | §14, CONTRIBUTING | Planning부터 전 단계 |
+
+## 14. Git 버전 관리
+
+`main`은 검증된 안정 버전, `dev`는 통합 개발, `feature/*`는 dev에서 분기하는 기능·일반 수정, `hotfix/*`는 main에서 분기하는 긴급 수정에 사용한다. 일반 흐름은 `dev → feature/* → dev → main`이며 hotfix는 main 반영 후 dev에도 병합한다. 별도 release 브랜치는 추가하지 않는다.
+
+계획·코드·migration·공유용 설정 예시는 Git으로 관리하고 개인 config·키·원본 PDF·DB·분석 결과·모델 cache는 제외한다. 커밋은 기능 단위로 나누며 merge 전에 변경 범위에 맞는 검증을 수행한다. 앱 릴리스는 검증된 main 커밋에만 version tag를 붙인다. 상세 naming·병합·hotfix·검증 규칙은 [CONTRIBUTING](../CONTRIBUTING.md)에 정의한다.
