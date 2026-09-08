@@ -3,6 +3,9 @@ node_modules/
 .next/
 dist/
 coverage/
+test-results/
+playwright-report/
+apps/web/public/vendor/pdfjs/
 *.tsbuildinfo
 
 # Private environment; tracked examples contain placeholders only
