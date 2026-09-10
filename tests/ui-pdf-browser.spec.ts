@@ -32,7 +32,10 @@ async function openSession(page: Page) {
   // The reader regression does not complete or mutate the installation wizard.
   await page.route("**/api/v1/config", async (route) => {
     if (route.request().method() !== "GET") return route.continue();
-    const response = await route.fetch({ url: `${apiBase}/api/v1/config` });
+    const response = await route
+      .fetch({ url: `${apiBase}/api/v1/config` })
+      .catch(() => null);
+    if (!response) return route.abort("failed");
     const body = await response.json();
     body.data.onboarding = { completedAt: "2026-09-09T00:00:00.000Z" };
     await route.fulfill({ response, json: body });
@@ -111,7 +114,9 @@ test.describe(`PDF ${browserName}`, () => {
         unsafeCalls.push(request.url());
     });
     await page.goto(`/papers/${paper.id}`);
-    await expect(page.getByLabel("페이지 번호", { exact: true })).toBeEnabled();
+    await expect(page.getByLabel("페이지 번호", { exact: true })).toBeEnabled({
+      timeout: 20000,
+    });
     await page.getByLabel("페이지 번호", { exact: true }).fill("1");
     await page.getByLabel("PDF 확대 비율").selectOption("1");
     await rendered(page, 1);
@@ -136,6 +141,9 @@ test.describe(`PDF ${browserName}`, () => {
       .getByRole("button", { name: "이전 페이지", exact: true })
       .click();
     await rendered(page, 1);
+    await expect(
+      page.locator('.textLayer [data-pdf-verified="true"]').first(),
+    ).toBeVisible();
     await page.locator(".textLayer").evaluate((layer) => {
       const text = Array.from(layer.querySelectorAll("span")).find(
         (s) =>

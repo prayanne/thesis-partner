@@ -1,5 +1,6 @@
 import type { Database, Row } from "../../db/src/client";
 import { generationSchema } from "../../contracts/src";
+import { GOOGLE_HTML_MARKERS_V1 } from "../../providers/src/translation-markup";
 import {
   credentialStatus,
   readConfig,
@@ -98,6 +99,11 @@ export async function registerGeneration(
     modelSelection,
     credentialRevision,
     targetLanguage,
+    // Version the fingerprint only for newly registered translation jobs.
+    // Previously queued snapshots without this field continue in text mode.
+    ...(operation === "translation"
+      ? { translationMode: GOOGLE_HTML_MARKERS_V1 }
+      : {}),
     promptVersion: "grounded-summary-v1",
     outputSchemaVersion: 1,
     parameters: {
@@ -429,7 +435,8 @@ export async function runGeneration(
         },
         { fetch: guardedFetch },
       );
-      const characters = texts.reduce((n, t) => n + [...t].length, 0);
+      const { characterCount: characters } =
+        providers.prepareTranslationPayload(texts, snapshot.translationMode);
       const latestConfig = await readConfig();
       const reservation = await reserveUsage(db, {
         jobId: job.id,
@@ -445,7 +452,12 @@ export async function runGeneration(
       });
       usageId = reservation.id;
       const result = await adapter.translate(
-        { texts, targetLanguage: snapshot.targetLanguage, requestIdentity },
+        {
+          texts,
+          targetLanguage: snapshot.targetLanguage,
+          translationMode: snapshot.translationMode,
+          requestIdentity,
+        },
         { credential, signal },
       );
       await settleUsage(db, usageId!, {
@@ -465,7 +477,7 @@ export async function runGeneration(
             segmentId: segments[i]!.id,
             sourceTextHash: segments[i]!.text_hash,
             targetTextHash: hash(item.translatedText),
-            alignmentStatus: "unavailable",
+            alignmentStatus: item.wordAlignment?.status ?? "unavailable",
           })),
           attribution: result.attribution,
         },

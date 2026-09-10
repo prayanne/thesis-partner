@@ -4,6 +4,12 @@ import { createTestDatabase, type Database } from "../packages/db/src/testing";
 import { migrate } from "../packages/db/src/migrations";
 import { defaultConfig } from "../packages/security/src";
 import { registerGeneration } from "../packages/domain/src/generation";
+import { requestGeneration } from "../packages/domain/src/cache";
+import { canonical, hash } from "../packages/domain/src/common";
+import {
+  GOOGLE_HTML_MARKERS_V1,
+  prepareTranslationPayload,
+} from "../packages/providers/src/translation-markup";
 import { executeOperation } from "../packages/domain/src/operations";
 import { claimJob, runClaimedJob } from "../packages/domain/src/jobs";
 const fixture = vi.hoisted(() => ({ config: null as any }));
@@ -217,4 +223,188 @@ it("reserves overlapping page and segment refreshes in one generation series", a
   expect(
     scopes.find((s) => s.scope_key.includes(segmentIds[0]!))!.generation,
   ).toBe(2);
+});
+
+it("stores text-bound word links and reserves/settles the complete HTML payload count", async () => {
+  const result = await registerGeneration(
+    db,
+    paperId,
+    "translation",
+    {
+      requestId: randomUUID(),
+      scope: { type: "segments", segmentIds: [segmentIds[0]] },
+    },
+    principal,
+  );
+  const [job] = await db.query("SELECT * FROM jobs WHERE id=$1", [
+    result.jobId,
+  ]);
+  expect(job!.input.snapshot.translationMode).toBe(GOOGLE_HTML_MARKERS_V1);
+  await drain();
+  expect(calls).toBe(1);
+  const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0]![1]!.body));
+  const expected = prepareTranslationPayload(
+    ["Source 0"],
+    GOOGLE_HTML_MARKERS_V1,
+  );
+  expect(body).toMatchObject({ q: expected.q, format: "html" });
+  const [usage] = await db.query("SELECT * FROM provider_usage");
+  expect(usage).toMatchObject({
+    status: "succeeded",
+    reserved_characters: expected.characterCount,
+    characters: expected.characterCount,
+  });
+  const [artifact] = await db.query("SELECT * FROM generated_artifacts");
+  const row = artifact!.payload.segments[0];
+  expect(row).toMatchObject({
+    sourceText: "Source 0",
+    targetText: "번역 Source 0",
+    translatedText: "번역 Source 0",
+    alignmentStatus: "partial",
+    wordAlignment: {
+      method: GOOGLE_HTML_MARKERS_V1,
+      status: "partial",
+      sourceText: "Source 0",
+      targetText: "번역 Source 0",
+      links: [
+        {
+          id: "w0-6",
+          sourceRange: { start: 0, end: 6 },
+          targetRange: { start: 3, end: 9 },
+        },
+        {
+          id: "w7-8",
+          sourceRange: { start: 7, end: 8 },
+          targetRange: { start: 10, end: 11 },
+        },
+      ],
+    },
+  });
+  expect(row.targetTextHash).toBe(hash(row.targetText));
+});
+
+it("enforces the existing monthly limit against HTML overhead before sending any request", async () => {
+  fixture.config.translation.monthlyCharacterLimit = 8; // Plain text fits, HTML does not.
+  await registerGeneration(
+    db,
+    paperId,
+    "translation",
+    {
+      requestId: randomUUID(),
+      scope: { type: "segments", segmentIds: [segmentIds[0]] },
+    },
+    principal,
+  );
+  await drain();
+  expect(calls).toBe(0);
+  expect(await db.query("SELECT * FROM provider_usage")).toHaveLength(0);
+  const [job] = await db.query("SELECT * FROM jobs");
+  expect(job!.error_code).toBe("CHARACTER_BUDGET_EXCEEDED");
+});
+
+it("keeps legacy queued snapshots in text mode and legacy caches separate from marker generations", async () => {
+  const current = await registerGeneration(
+    db,
+    paperId,
+    "translation",
+    {
+      requestId: randomUUID(),
+      scope: { type: "segments", segmentIds: [segmentIds[0]] },
+    },
+    principal,
+  );
+  const [currentJob] = await db.query("SELECT * FROM jobs WHERE id=$1", [
+    current.jobId,
+  ]);
+  const legacySnapshot = { ...currentJob!.input.snapshot };
+  delete legacySnapshot.translationMode;
+  const legacyRequest = {
+    requestId: randomUUID(),
+    cacheMode: "use" as const,
+    operation: "translation",
+    scopeKey: currentJob!.input.scopeKey,
+    fingerprint: hash(canonical(legacySnapshot)),
+    input: { snapshot: legacySnapshot, principal },
+  };
+  const legacy = await requestGeneration(db, legacyRequest);
+  const [legacyJob] = await db.query("SELECT * FROM jobs WHERE id=$1", [
+    legacy.jobId,
+  ]);
+  expect(legacyJob!.input.logicalKey).not.toBe(currentJob!.input.logicalKey);
+  expect(legacyJob!.input.snapshot.translationMode).toBeUndefined();
+  await drain();
+  expect(calls).toBe(2);
+  const bodies = vi
+    .mocked(fetch)
+    .mock.calls.map((call) => JSON.parse(String(call[1]!.body)));
+  expect(bodies).toContainEqual({
+    q: ["Source 0"],
+    target: "ko",
+    format: "text",
+  });
+  expect(bodies.filter((body) => body.format === "html")).toHaveLength(1);
+  const [legacyUsage] = await db.query(
+    "SELECT * FROM provider_usage WHERE job_id=$1",
+    [legacy.jobId],
+  );
+  expect(legacyUsage).toMatchObject({ reserved_characters: 8, characters: 8 });
+  const legacyCache = await requestGeneration(db, {
+    ...legacyRequest,
+    requestId: randomUUID(),
+  });
+  expect(legacyCache.cache).toBe("hit");
+  expect(legacyCache.payload.segments[0].wordAlignment).toBeUndefined();
+  expect(legacyCache.payload.segments[0].alignmentStatus).toBe("unavailable");
+  const currentCache = await registerGeneration(
+    db,
+    paperId,
+    "translation",
+    {
+      requestId: randomUUID(),
+      scope: { type: "segments", segmentIds: [segmentIds[0]] },
+    },
+    principal,
+  );
+  expect(currentCache.cache).toBe("hit");
+  expect(currentCache.payload.segments[0].wordAlignment.method).toBe(
+    GOOGLE_HTML_MARKERS_V1,
+  );
+  expect(calls).toBe(2);
+});
+
+it("never retries rejected HTML and retains the full uncertain usage reservation", async () => {
+  vi.mocked(fetch).mockImplementation(async () => {
+    calls++;
+    return Response.json({
+      data: { translations: [{ translatedText: "<script>bad</script>" }] },
+    });
+  });
+  await registerGeneration(
+    db,
+    paperId,
+    "translation",
+    {
+      requestId: randomUUID(),
+      scope: { type: "segments", segmentIds: [segmentIds[0]] },
+    },
+    principal,
+  );
+  await drain();
+  await drain();
+  expect(calls).toBe(1);
+  expect(await db.query("SELECT * FROM generated_artifacts")).toHaveLength(0);
+  const [job] = await db.query("SELECT * FROM jobs");
+  expect(job).toMatchObject({
+    state: "failed",
+    error_code: "INVALID_UPSTREAM_RESPONSE",
+    attempts: 1,
+  });
+  const [usage] = await db.query("SELECT * FROM provider_usage");
+  expect(usage).toMatchObject({
+    status: "outcome_unknown",
+    reserved_characters: prepareTranslationPayload(
+      ["Source 0"],
+      GOOGLE_HTML_MARKERS_V1,
+    ).characterCount,
+  });
 });

@@ -203,13 +203,39 @@ export interface TranslationRequest {
   texts: readonly string[];
   sourceLanguage?: string;
   targetLanguage: string;
+  /** Omitted by legacy snapshots, which must continue to use plain text. */
+  translationMode?: "text" | "google-html-markers-v1";
   requestIdentity: RequestIdentity;
+}
+
+/** Half-open UTF-16 offsets, never splitting a surrogate pair. */
+export interface TranslationTextRange {
+  start: number;
+  end: number;
+}
+
+export interface TranslationWordLink {
+  /** Stable source token ID: w<UTF-16 start>-<UTF-16 end>. */
+  id: string;
+  sourceRange: TranslationTextRange;
+  targetRange: TranslationTextRange;
+}
+
+export interface TranslationWordAlignment {
+  /** Preserved HTML markers are structural evidence, not semantic certainty. */
+  method: "google-html-markers-v1";
+  status: "available" | "partial" | "unavailable";
+  /** Exact texts to which all ranges apply; consumers must check this binding. */
+  sourceText: string;
+  targetText: string;
+  links: TranslationWordLink[];
 }
 
 export interface TranslationItem {
   sourceText: string;
   translatedText: string;
   detectedSourceLanguage?: string;
+  wordAlignment?: TranslationWordAlignment;
 }
 
 export interface TranslationAttribution {
