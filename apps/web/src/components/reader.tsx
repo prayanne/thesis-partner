@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   ChevronLeft,
@@ -20,7 +20,14 @@ import type {
   SourceAnchor,
 } from "../lib/types";
 import { Empty, ErrorState, Loading, Notice } from "./ui";
-import { PdfViewer, type PdfSelection } from "./pdf-viewer";
+import {
+  PdfViewer,
+  type PdfSelection,
+  type PdfHoverTarget,
+  type PdfTextHover,
+} from "./pdf-viewer";
+import { TranslationPage } from "./translation-page";
+import type { ReadingFocus } from "../lib/translation-page";
 import { JobStatus } from "./jobs";
 import { Markdown } from "./markdown";
 type Panel = "translation" | "summary" | "chat" | "notes";
@@ -32,6 +39,31 @@ export function ReaderPage({ id }: { id: string }) {
   const [panel, setPanel] = useState<Panel>("translation");
   const [selection, setSelection] = useState<PdfSelection | null>(null);
   const [activeAnchor, setActiveAnchor] = useState<SourceAnchor | null>(null);
+  const [readingFocus, setReadingFocus] = useState<ReadingFocus>(null);
+  const [hoverTargets, setHoverTargets] = useState<PdfHoverTarget[]>([]);
+  const focusChanged = useCallback((next: ReadingFocus) => {
+    setReadingFocus((previous) =>
+      JSON.stringify(previous) === JSON.stringify(next) ? previous : next,
+    );
+  }, []);
+  const sourceHovered = useCallback(
+    (hit: PdfTextHover | null) => {
+      focusChanged(
+        hit
+          ? {
+              origin: "source",
+              segmentId: hit.segmentId,
+              range: hit.sourceRange,
+            }
+          : null,
+      );
+    },
+    [focusChanged],
+  );
+  useEffect(() => {
+    setReadingFocus(null);
+    setHoverTargets([]);
+  }, [id, page, scale, panel, paper.data?.currentRevisionId]);
   const segments = useResource<Segment[] | { items: Segment[] }>(
     `/papers/${id}/segments?pageNumber=${page}`,
   );
@@ -200,6 +232,8 @@ export function ReaderPage({ id }: { id: string }) {
               onPages={setPages}
               onSelection={selectionChanged}
               activeAnchor={activeAnchor}
+              onTextHover={sourceHovered}
+              hoverTargets={panel === "translation" ? hoverTargets : []}
             />
           ) : (
             <Empty title="원문이 아직 연결되지 않았어요">
@@ -247,6 +281,10 @@ export function ReaderPage({ id }: { id: string }) {
                 pageNumber={page}
                 segments={segments}
                 onAnchor={setActiveAnchor}
+                revisionId={revision ?? ""}
+                focus={readingFocus}
+                onFocus={focusChanged}
+                onTargets={setHoverTargets}
               />
             )}
           </div>
@@ -261,12 +299,20 @@ function GenerationPanel({
   pageNumber,
   segments,
   onAnchor,
+  revisionId,
+  focus,
+  onFocus,
+  onTargets,
 }: {
   paperId: string;
   operation: Exclude<Panel, "notes">;
   pageNumber: number;
   segments: ReturnType<typeof useResource<Segment[] | { items: Segment[] }>>;
   onAnchor: (anchor: SourceAnchor | null) => void;
+  revisionId: string;
+  focus: ReadingFocus;
+  onFocus: (focus: ReadingFocus) => void;
+  onTargets: (targets: PdfHoverTarget[]) => void;
 }) {
   const artifacts = useResource<Artifact[] | { items: Artifact[] }>(
     `/papers/${paperId}/artifacts?operation=${operation}${operation === "translation" ? `&pageNumber=${pageNumber}` : ""}`,
@@ -279,6 +325,13 @@ function GenerationPanel({
   const [direct, setDirect] = useState<Artifact | null>(null);
   const [segmentId, setSegmentId] = useState("page");
   const selectedSegment = segmentId;
+  const visibleSegments = useMemo(
+    () =>
+      listOf(segments.data).filter(
+        (s) => selectedSegment === "page" || s.id === selectedSegment,
+      ),
+    [segments.data, selectedSegment],
+  );
   const titles = {
     translation: "한국어 번역",
     summary: "핵심 내용 정리",
@@ -313,7 +366,11 @@ function GenerationPanel({
         },
       );
       if ("jobId" in result || ("state" in result && !("payload" in result))) {
+        setDirect(null);
         setJob(result as Job);
+      } else if (operation === "translation") {
+        setDirect(null);
+        artifacts.reload();
       } else setDirect(result as Artifact);
       if (operation === "chat") {
         setQuestion(message);
@@ -332,36 +389,37 @@ function GenerationPanel({
         {operation === "translation" && <small>{pageNumber}페이지</small>}
       </div>
       {operation === "translation" && (
-        <label style={{ marginBottom: 15 }}>
-          번역할 원문 항목
-          <select
-            aria-label="번역할 원문 항목"
-            value={selectedSegment}
-            onChange={(e) => {
-              setSegmentId(e.target.value);
-              setDirect(null);
-            }}
-          >
-            <option value="page">
-              현재 페이지 전체 · {listOf(segments.data).length}개 원문 항목
-            </option>
-            {listOf(segments.data).map((s, i) => (
-              <option key={s.id} value={s.id}>
-                {i + 1}. {s.sourceText.slice(0, 65)}
+        <details className="translation-options">
+          <summary>
+            번역 범위 ·{" "}
+            {selectedSegment === "page" ? "현재 페이지 전체" : "선택한 구절"}
+          </summary>
+          <label style={{ marginTop: 12, marginBottom: 15 }}>
+            번역할 원문 항목
+            <select
+              aria-label="번역할 원문 항목"
+              value={selectedSegment}
+              onChange={(e) => {
+                setSegmentId(e.target.value);
+                setDirect(null);
+              }}
+            >
+              <option value="page">
+                현재 페이지 전체 · {listOf(segments.data).length}개 원문 항목
               </option>
-            ))}
-          </select>
-          <small>
-            현재 페이지 또는 원문 항목 하나를 선택하세요. 페이지 번역은 항목별
-            작업으로 진행됩니다.
-          </small>
-        </label>
-      )}
-      {operation === "translation" && (
-        <Notice>
-          단어 정렬은 아직 검증되지 않았습니다. 번역문 hover와 원문 단어 연결은
-          제공하지 않습니다.
-        </Notice>
+              {listOf(segments.data).map((s, i) => (
+                <option key={s.id} value={s.id}>
+                  {i + 1}. {s.sourceText.slice(0, 65)}
+                </option>
+              ))}
+            </select>
+            <small>
+              저장된 번역을 한 페이지로 이어 읽습니다. 항목 선택은 필요한 부분만
+              다시 번역할 때 사용하세요. 새 번역은 단어 연결용 HTML 표식을 함께
+              전송하며, 표식 문자도 Google 사용량·과금 대상에 포함됩니다.
+            </small>
+          </label>
+        </details>
       )}
       {error && (
         <p className="inline-error" role="alert">
@@ -385,14 +443,19 @@ function GenerationPanel({
             )}
           </div>
           {question && <div className="chat-question">{question}</div>}
-          <ArtifactContent
-            artifact={artifact}
-            segmentId={
-              operation === "translation" && selectedSegment !== "page"
-                ? selectedSegment
-                : undefined
-            }
-          />
+          {operation === "translation" ? (
+            <TranslationPage
+              artifact={artifact}
+              segments={visibleSegments}
+              revisionId={revisionId}
+              pageNumber={pageNumber}
+              focus={focus}
+              onFocus={onFocus}
+              onTargets={onTargets}
+            />
+          ) : (
+            <ArtifactContent artifact={artifact} />
+          )}
         </>
       ) : (
         <Empty

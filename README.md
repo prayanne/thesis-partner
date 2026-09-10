@@ -10,6 +10,7 @@
 - [Git 브랜치·커밋·검증·릴리스 규칙](CONTRIBUTING.md)
 - [구현 상태·검증 범위·남은 작업](docs/IMPLEMENTATION-STATUS.md)
 - [PDF 뷰어·모델 선택·첫 설정 검증 결과](docs/READER-SETUP-ACCEPTANCE.md)
+- [페이지형 번역·양방향 호버 검증 결과](docs/TRANSLATION-PAGE-ACCEPTANCE.md)
 
 기본 구성: React UI + Next.js API, PostgreSQL, 별도 Qdrant, background worker. OrbStack 위에서 Docker Compose로 구동하고 원본 PDF는 호스트 디렉터리를 마운트한다. Ollama·LM Studio는 PC에서 실행 중인 서비스를 연결한다.
 
@@ -83,7 +84,19 @@ npm run credentials:import -- --from .env --provider anthropic --confirm-write
 
 Ollama/LM Studio는 호스트 PC에서 실행한다. **컨테이너에서의 주소는 `http://host.docker.internal:11434/v1` / `http://host.docker.internal:1234/v1`** 이다. 호스트 개발 시에는 `127.0.0.1`을 사용한다. 기존 설정은 보존되므로 실행 방식을 바꾸면 Configuration에서 주소를 확인해야 한다. 로컬 서버도 cloud model/proxy/LM Link를 사용할 수 있으므로 해당 기능이 꺼져 있는지 확인한 후 로컬 격리를 확인한다. 주소 변경 후에는 다시 확인해야 한다.
 
-돈 단위 한도를 설정했는데 검증된 모델 가격 정보가 없으면 유료 요청을 차단한다. 비용을 임의로 추정해 한도를 지켰다고 표시하지 않는다. 실제 OpenAI 모델 목록·제한된 추론 요청의 결과는 [검증 기록](docs/READER-SETUP-ACCEPTANCE.md)에 구분해서 기록한다. 다른 provider와 외부 번역의 실제 호출은 아직 검증하지 않았다.
+돈 단위 한도를 설정했는데 검증된 모델 가격 정보가 없으면 유료 요청을 차단한다. 비용을 임의로 추정해 한도를 지켰다고 표시하지 않는다. 2026-09-09의 OpenAI 초기 검증은 [이전 기록](docs/READER-SETUP-ACCEPTANCE.md)에 보존한다. 2026-09-10 사용자가 OpenAI·Google 연동과 테스트 완료를 알렸으며, 이후 개발은 기존 설정을 유지한다. 새 Google HTML 단어 표식 요청 1회의 실패와 UI 검증 결과는 [최신 기록](docs/TRANSLATION-PAGE-ACCEPTANCE.md)에 별도로 구분한다.
+
+## 원문과 페이지 번역 읽기
+
+논문 → **번역** 탭에서 현재 페이지의 저장된 번역을 제목·문단이 있는 하나의 문서로 읽는다. 항목별 카드와 반복 원문 인용을 없애고 번역 패널을 넓혔다. 이는 화면 구성 변경이며 PDF 파일 자체를 한국어 PDF로 바꾸는 기능은 아니다.
+
+- 원문 또는 번역에 마우스를 올리면 대응하는 문장·구절을 민트색으로 표시한다. 유효한 단어 연결 정보가 있으면 해당 단어·구절을 호박색으로 구분한다.
+- 저장된 기존 번역은 재호출 없이 표시한다. 예전 결과에 단어 연결 정보가 없으면 문장·구절만 연결한다. **번역 범위**를 펼쳐 필요한 항목을 선택하고 **새로 생성**하면 해당 범위의 재번역과 단어 연결을 시도한다. 새 연결이 반드시 생성되는 것은 아니다.
+- 페이지 진입, 브라우저 새로고침, 호버는 생성 요청을 보내지 않는다. 요청 버튼은 현재 버전의 캐시를 사용하고, **새로 생성**은 명시적으로 새 결과를 요청한다. 이전 버전 캐시와 새 HTML 표식 버전은 생성 fingerprint로 구분한다.
+- 단어 연결은 Google이 보존한 HTML 표식을 검증하는 방식이다. 언어학적으로 정확한 일대일 대응을 보장하지 않으며, 누락·중복·유효하지 않은 표식은 연결하지 않는다. **표식/공백을 포함한 HTML 문자도 사용량과 과금 대상**이므로 기존 월간 문자 한도에 포함한다. [Google 공식 번역 FAQ](https://docs.cloud.google.com/translate/faq)
+- 키보드는 Tab으로 구절에 초점을 맞추고 좌우 방향키로 연결 단어를 이동한다. Escape, 마우스 이탈, 페이지·확대율·탭 변경으로 호버 강조를 해제한다. 저장된 메모 강조는 별도로 유지한다.
+
+현재 단어 연결 UI/파서/좌표 검증은 통과했으나 새 방식의 실제 Google 요청 성공은 아직 확인하지 못했다. 기존 실제 Google 번역 캐시의 페이지 표시와 문장·구절 호버는 확인했다. OCR, 다단/수식 읽기 순서 완전 복원, 문맥 단위 일괄 번역은 후속 범위다.
 
 ## API와 MCP
 

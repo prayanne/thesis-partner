@@ -1,6 +1,11 @@
 import { ProviderError } from "./errors";
 import { fetchChecked, jsonHeaders, readJson, requireCredential } from "./http";
 import { getProviderDefinition } from "./registry";
+import {
+  GOOGLE_HTML_MARKERS_V1,
+  parseTranslationMarkup,
+  prepareTranslationPayload,
+} from "./translation-markup";
 import type {
   FetchImplementation,
   GoogleTranslationConfig,
@@ -9,6 +14,14 @@ import type {
   TranslationRequest,
   TranslationResult,
 } from "./types";
+
+export {
+  GOOGLE_HTML_MARKERS_V1,
+  markTranslationText,
+  parseTranslationMarkup,
+  prepareTranslationPayload,
+  translationSourceWords,
+} from "./translation-markup";
 
 const ATTRIBUTION = Object.freeze({
   service: "Google Translate" as const,
@@ -66,10 +79,14 @@ export class GoogleTranslationV2Adapter implements TranslationAdapter {
         message: "At least one translation input is required.",
         requestIdentity: request.requestIdentity,
       });
+    const payload = prepareTranslationPayload(
+      request.texts,
+      request.translationMode,
+    );
     const body: Record<string, unknown> = {
-      q: request.texts,
+      q: payload.q,
       target: request.targetLanguage,
-      format: "text",
+      format: payload.format,
     };
     if (request.sourceLanguage) body.source = request.sourceLanguage;
     const headers = jsonHeaders(context.credential, "google");
@@ -117,11 +134,20 @@ export class GoogleTranslationV2Adapter implements TranslationAdapter {
           requestIdentity: request.requestIdentity,
         });
       const object = entry as Record<string, unknown>;
+      const translated =
+        request.translationMode === GOOGLE_HTML_MARKERS_V1
+          ? parseTranslationMarkup(
+              request.texts[index]!,
+              object.translatedText as string,
+            )
+          : {
+              translatedText: normalizeTranslatedText(
+                object.translatedText as string,
+              ),
+            };
       return {
         sourceText: request.texts[index]!,
-        translatedText: normalizeTranslatedText(
-          object.translatedText as string,
-        ),
+        ...translated,
         detectedSourceLanguage:
           typeof object.detectedSourceLanguage === "string"
             ? object.detectedSourceLanguage
@@ -130,10 +156,7 @@ export class GoogleTranslationV2Adapter implements TranslationAdapter {
     });
     return {
       items,
-      characterCount: request.texts.reduce(
-        (sum, text) => sum + Array.from(text).length,
-        0,
-      ),
+      characterCount: payload.characterCount,
       attribution: ATTRIBUTION,
       requestIdentity: request.requestIdentity,
       providerRequestId: response.headers.get("x-request-id") ?? undefined,

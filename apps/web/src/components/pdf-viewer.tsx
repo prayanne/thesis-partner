@@ -1,5 +1,12 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import type { PointerEvent } from "react";
 import type {
   PDFDocumentProxy,
   PageViewport,
@@ -17,6 +24,37 @@ import {
 } from "../lib/pdf-mapping";
 import { ErrorState, Loading } from "./ui";
 import { readPdfTextContent } from "../lib/pdf-text-content";
+import {
+  caretAtPoint,
+  caretTextOffset,
+  pdfWordRanges,
+  pointInRects,
+  rangeRectsInStage,
+  textRange,
+  verifiedHoverRange,
+  wordRangesAtCaret,
+} from "../lib/pdf-hover";
+import type { PdfHoverTarget, PdfTextHover } from "../lib/pdf-hover";
+export type { PdfHoverTarget, PdfTextHover } from "../lib/pdf-hover";
+
+const noHoverTargets: PdfHoverTarget[] = [];
+type RenderedTextLayer = {
+  signature: string;
+  layer: TextLayer;
+  viewport: PageViewport;
+};
+type VerifiedTextItem = {
+  segment: Segment;
+  element: HTMLSpanElement;
+  index: number;
+  text: string;
+  hash: string;
+  words: { start: number; end: number }[];
+};
+type HoverRect = {
+  target: PdfHoverTarget;
+  rect: { left: number; top: number; width: number; height: number };
+};
 export interface PdfSelection {
   text: string;
   anchor: SourceAnchor | null;
@@ -32,6 +70,8 @@ export function PdfViewer({
   onPages,
   onSelection,
   activeAnchor,
+  onTextHover,
+  hoverTargets = noHoverTargets,
 }: {
   paperId: string;
   revisionId: string;
@@ -42,18 +82,50 @@ export function PdfViewer({
   onPages: (count: number) => void;
   onSelection: (selection: PdfSelection | null) => void;
   activeAnchor?: SourceAnchor | null;
+  onTextHover?: (hit: PdfTextHover | null) => void;
+  hoverTargets?: PdfHoverTarget[];
 }) {
-  const signature = `${revisionId}:${pageNumber}:${scale}`;
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const signature = `${paperId}:${revisionId}:${pageNumber}:${scale}:${loadAttempt}`;
   const liveSignature = useRef(signature);
   liveSignature.current = signature;
   const [verified, setVerified] = useState<{
     signature: string;
     ids: Set<string>;
-  }>({ signature: "", ids: new Set() });
+    segments: Segment[] | null;
+    rendered: RenderedTextLayer | null;
+    textItems: Map<string, VerifiedTextItem>;
+  }>({
+    signature: "",
+    ids: new Set(),
+    segments: null,
+    rendered: null,
+    textItems: new Map(),
+  });
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
-  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [rendered, setRendered] = useState<RenderedTextLayer | null>(null);
+  const [selecting, setSelecting] = useState(false);
+  const pointerSelecting = useRef(false);
+  const lastHover = useRef<PdfTextHover | null>(null);
+  const hoverCallback = useRef(onTextHover);
+  hoverCallback.current = onTextHover;
+  const emitHover = useCallback((hit: PdfTextHover | null) => {
+    const previous = lastHover.current;
+    if (
+      previous?.segmentId === hit?.segmentId &&
+      previous?.sourceRange.start === hit?.sourceRange.start &&
+      previous?.sourceRange.end === hit?.sourceRange.end
+    )
+      return;
+    lastHover.current = hit;
+    hoverCallback.current?.(hit);
+  }, []);
+  const clearHover = useCallback(() => {
+    lastHover.current = null;
+    hoverCallback.current?.(null);
+  }, []);
   const [viewport, setViewport] = useState<PageViewport | null>(null);
   const [ocr, setOcr] = useState(false);
   const stage = useRef<HTMLDivElement>(null);
@@ -66,6 +138,37 @@ export function PdfViewer({
   const sourceBox = useRef<number[]>([]);
   const callback = useRef(onPages);
   callback.current = onPages;
+  useEffect(() => {
+    clearHover();
+    return clearHover;
+  }, [signature, rendered, segments, clearHover]);
+  useEffect(() => {
+    const selectionChanged = () => {
+      const selected = window.getSelection();
+      const active =
+        pointerSelecting.current || Boolean(selected && !selected.isCollapsed);
+      setSelecting(active);
+      if (active) clearHover();
+    };
+    const pointerEnded = () => {
+      pointerSelecting.current = false;
+      selectionChanged();
+    };
+    const blurred = () => {
+      pointerEnded();
+      clearHover();
+    };
+    document.addEventListener("selectionchange", selectionChanged);
+    window.addEventListener("pointerup", pointerEnded);
+    window.addEventListener("pointercancel", pointerEnded);
+    window.addEventListener("blur", blurred);
+    return () => {
+      document.removeEventListener("selectionchange", selectionChanged);
+      window.removeEventListener("pointerup", pointerEnded);
+      window.removeEventListener("pointercancel", pointerEnded);
+      window.removeEventListener("blur", blurred);
+    };
+  }, [clearHover]);
   useEffect(() => {
     let stopped = false;
     let task:
@@ -107,6 +210,8 @@ export function PdfViewer({
     };
   }, [paperId, revisionId, loadAttempt]);
   useEffect(() => {
+    setRendered(null);
+    clearHover();
     if (!pdf || !canvas.current || !layerElement.current) return;
     let stopped = false;
     const controller = new AbortController();
@@ -165,7 +270,10 @@ export function PdfViewer({
       });
       layer.current = textLayer;
       await textLayer.render();
-      if (!stopped) setLoading(false);
+      if (!stopped) {
+        setRendered({ signature, layer: textLayer, viewport: current });
+        setLoading(false);
+      }
     })().catch((e) => {
       if (!stopped && e?.name !== "RenderingCancelledException") {
         setError(e as Error);
@@ -178,17 +286,21 @@ export function PdfViewer({
       render?.cancel();
       textLayer?.cancel();
       layer.current = null;
+      clearHover();
     };
-  }, [pdf, pageNumber, scale]);
+  }, [pdf, pageNumber, scale, signature, clearHover]);
   useEffect(() => {
     let stopped = false;
-    if (loading || !pdfViewport.current) return;
+    if (loading || error || !rendered || rendered.signature !== signature)
+      return;
+    const divs = rendered.layer.textDivs;
     (async () => {
       const hashes = await Promise.all(
         items.current.map((item) => sha256(item.str)),
       );
       if (stopped) return;
       const ids = new Set<string>();
+      const textItems = new Map<string, VerifiedTextItem>();
       for (const segment of segments) {
         if (segment.paperRevisionId && segment.paperRevisionId !== revisionId)
           continue;
@@ -204,20 +316,192 @@ export function PdfViewer({
               pageNumber,
               segment.extractionRunId,
             )
-          )
+          ) {
             ids.add(segment.id);
+            const element = divs[i];
+            const item = {
+              segment,
+              element,
+              index: itemIndexes.current[i],
+              text,
+              hash: hashes[i],
+              words: pdfWordRanges(text),
+            };
+            const target: PdfHoverTarget = {
+              segmentId: segment.id,
+              sourceRange: { start: 0, end: text.length },
+              kind: "sentence",
+              paperRevisionId: revisionId,
+              extractionRunId: segment.extractionRunId,
+              sourceTextHash: segment.textHash,
+              pageNumber,
+            };
+            if (
+              element?.isConnected &&
+              element.textContent === text &&
+              rendered.layer.textContentItemsStr[i] === text &&
+              verifiedHoverRange(target, segment, item, {
+                revisionId,
+                pageNumber,
+              })
+            ) {
+              textItems.set(segment.id, item);
+              element.dataset.pdfVerified = "true";
+              element.dataset.segmentId = segment.id;
+              element.dataset.pdfItemIndex = String(item.index);
+              element.dataset.sourceStart = "0";
+              element.dataset.sourceEnd = String(text.length);
+              element.dataset.paperRevisionId = revisionId;
+              element.dataset.extractionRunId = segment.extractionRunId;
+              element.dataset.sourceTextHash = segment.textHash;
+              element.dataset.pageNumber = String(pageNumber);
+            }
+          }
         }
       }
-      setVerified({ signature, ids });
+      setVerified({ signature, ids, segments, rendered, textItems });
     })().catch(() => {
-      if (!stopped) setVerified({ signature, ids: new Set() });
+      if (!stopped)
+        setVerified({
+          signature,
+          ids: new Set(),
+          segments,
+          rendered,
+          textItems: new Map(),
+        });
     });
     return () => {
       stopped = true;
+      for (const div of divs) {
+        for (const key of [
+          "pdfVerified",
+          "segmentId",
+          "pdfItemIndex",
+          "sourceStart",
+          "sourceEnd",
+          "paperRevisionId",
+          "extractionRunId",
+          "sourceTextHash",
+          "pageNumber",
+        ])
+          delete div.dataset[key];
+      }
     };
-  }, [loading, segments, signature, revisionId, pageNumber]);
+  }, [loading, error, rendered, segments, signature, revisionId, pageNumber]);
+  const hoverReady =
+    !loading &&
+    !error &&
+    rendered?.signature === signature &&
+    verified.signature === signature &&
+    verified.rendered === rendered &&
+    verified.segments === segments;
+  const [hoverGeometry, setHoverGeometry] = useState<{
+    verified: typeof verified;
+    targets: PdfHoverTarget[];
+    rects: HoverRect[];
+  } | null>(null);
+  useLayoutEffect(() => {
+    if (!hoverReady || selecting || !stage.current || !rendered) {
+      setHoverGeometry(null);
+      return;
+    }
+    const stageBounds = stage.current.getBoundingClientRect();
+    const rects: HoverRect[] = [];
+    for (const target of hoverTargets) {
+      if (!target) continue;
+      const item = verified.textItems.get(target.segmentId);
+      if (!item || !item.element.isConnected) continue;
+      const offsets = verifiedHoverRange(target, item.segment, item, {
+        revisionId,
+        pageNumber,
+      });
+      const range = offsets && textRange(item.element, item.text, offsets);
+      if (!range) continue;
+      for (const rect of rangeRectsInStage(
+        range.getClientRects(),
+        stageBounds,
+        rendered.viewport,
+      ))
+        rects.push({ target, rect });
+    }
+    setHoverGeometry({ verified, targets: hoverTargets, rects });
+  }, [
+    hoverReady,
+    selecting,
+    rendered,
+    verified,
+    hoverTargets,
+    revisionId,
+    pageNumber,
+  ]);
+  function textPointerMoved(event: PointerEvent<HTMLDivElement>) {
+    const selected = window.getSelection();
+    if (
+      !hoverReady ||
+      event.buttons !== 0 ||
+      pointerSelecting.current ||
+      (selected && !selected.isCollapsed) ||
+      event.pointerType === "touch"
+    ) {
+      emitHover(null);
+      return;
+    }
+    const caret = caretAtPoint(
+      event.currentTarget.ownerDocument,
+      event.clientX,
+      event.clientY,
+    );
+    if (!caret || !event.currentTarget.contains(caret.node)) {
+      emitHover(null);
+      return;
+    }
+    const element = (
+      caret.node.nodeType === 1
+        ? (caret.node as Element)
+        : caret.node.parentElement
+    )?.closest<HTMLElement>('[data-pdf-verified="true"]');
+    const item = element?.dataset.segmentId
+      ? verified.textItems.get(element.dataset.segmentId)
+      : undefined;
+    if (item && item.element === element && item.element.contains(caret.node)) {
+      const offset = caretTextOffset(item.element, item.text, caret);
+      if (offset === null) {
+        emitHover(null);
+        return;
+      }
+      for (const sourceRange of wordRangesAtCaret(
+        item.text,
+        offset,
+        item.words,
+      )) {
+        const target: PdfHoverTarget = {
+          segmentId: item.segment.id,
+          sourceRange,
+          kind: "word",
+          paperRevisionId: revisionId,
+          extractionRunId: item.segment.extractionRunId,
+          sourceTextHash: item.segment.textHash,
+          pageNumber,
+        };
+        const offsets = verifiedHoverRange(target, item.segment, item, {
+          revisionId,
+          pageNumber,
+        });
+        const range = offsets && textRange(item.element, item.text, offsets);
+        if (
+          range &&
+          pointInRects(range.getClientRects(), event.clientX, event.clientY)
+        ) {
+          emitHover({ segmentId: item.segment.id, sourceRange: offsets! });
+          return;
+        }
+      }
+    }
+    emitHover(null);
+  }
   async function selectionChanged() {
     if (loading) return;
+    clearHover();
     const selected = window.getSelection();
     if (
       !selected ||
@@ -319,7 +603,9 @@ export function PdfViewer({
     ({ anchor }) =>
       anchor &&
       !loading &&
+      !error &&
       verified.signature === signature &&
+      verified.segments === segments &&
       verified.ids.has(anchor.segmentId) &&
       anchor.paperId === paperId &&
       anchor.paperRevisionId === revisionId &&
@@ -334,7 +620,7 @@ export function PdfViewer({
       ),
   );
   return (
-    <div className="pdf-scroll">
+    <div className="pdf-scroll" onPointerLeave={clearHover}>
       {loading && <Loading label="PDF 페이지를 불러오는 중" />}
       {error && (
         <ErrorState error={error} retry={() => setLoadAttempt((n) => n + 1)} />
@@ -347,6 +633,12 @@ export function PdfViewer({
       <div
         ref={stage}
         className="pdf-stage"
+        data-page-number={pageNumber}
+        data-paper-revision-id={revisionId}
+        data-pdf-scale={scale}
+        data-pdf-rotation={rendered?.viewport.rotation}
+        data-pdf-hover-ready={Boolean(hoverReady)}
+        data-pdf-selecting={selecting}
         style={{
           width: viewport?.width,
           height: viewport?.height,
@@ -357,7 +649,19 @@ export function PdfViewer({
         onKeyUp={() => void selectionChanged()}
       >
         <canvas ref={canvas} aria-label={`PDF 원문 ${pageNumber}페이지`} />
-        <div className="textLayer" ref={layerElement} />
+        <div
+          className="textLayer"
+          ref={layerElement}
+          data-pdf-text-layer="true"
+          onPointerMove={textPointerMoved}
+          onPointerLeave={clearHover}
+          onPointerDown={() => {
+            pointerSelecting.current = true;
+            setSelecting(true);
+            clearHover();
+          }}
+          onPointerCancel={clearHover}
+        />
         <div className="pdf-highlights" aria-hidden="true">
           {viewport &&
             anchors.flatMap(({ id, anchor, active }) =>
@@ -376,6 +680,44 @@ export function PdfViewer({
                   />
                 )),
             )}
+        </div>
+        <div
+          className="pdf-highlights pdf-hover-overlays"
+          aria-hidden="true"
+          style={{ pointerEvents: "none" }}
+          data-pdf-hover-overlay="true"
+        >
+          {hoverReady &&
+            !selecting &&
+            hoverGeometry?.verified === verified &&
+            hoverGeometry.targets === hoverTargets &&
+            [...hoverGeometry.rects]
+              .sort(
+                (a, b) =>
+                  Number(a.target.kind === "word") -
+                  Number(b.target.kind === "word"),
+              )
+              .map(({ target, rect }, index) => (
+                <div
+                  key={`${target.segmentId}-${target.kind}-${target.sourceRange.start}-${target.sourceRange.end}-${index}`}
+                  className={`pdf-hover-${target.kind}`}
+                  style={{
+                    ...rect,
+                    position: "absolute",
+                    pointerEvents: "none",
+                  }}
+                  data-hover-kind={target.kind}
+                  data-segment-id={target.segmentId}
+                  data-source-start={target.sourceRange.start}
+                  data-source-end={target.sourceRange.end}
+                  data-paper-revision-id={target.paperRevisionId}
+                  data-extraction-run-id={target.extractionRunId}
+                  data-source-text-hash={target.sourceTextHash}
+                  data-page-number={target.pageNumber}
+                  data-pdf-scale={scale}
+                  data-pdf-rotation={rendered?.viewport.rotation}
+                />
+              ))}
         </div>
       </div>
     </div>

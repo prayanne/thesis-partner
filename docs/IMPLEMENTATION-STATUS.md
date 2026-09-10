@@ -1,8 +1,17 @@
 # 로컬 개발 프리뷰 상태
 
-기록일: 2026-09-09. 이 문서는 설계상 목표가 아니라 현재 구현과 실제 검증 경계를 기록한다. 전체 서비스 완성을 의미하지 않는다.
+기록일: 2026-09-10. 이 문서는 설계상 목표가 아니라 현재 구현과 실제 검증 경계를 기록한다. 전체 서비스 완성을 의미하지 않는다.
 
-## 2026-09-09 PDF·모델 선택·첫 설정 후속 작업 — 최신
+## 2026-09-10 페이지형 번역·양방향 호버 — 최신
+
+- 사용자가 OpenAI·Google 연동/테스트 완료를 알렸다. 이 알림은 아래 9월 9일 초기 실패 기록 이후의 상태이며 이번 변경에서 OpenAI를 다시 호출하거나 키/설정을 교체하지 않았다. 시작·종료 시 개인 설정 revision 11과 네 개인 파일의 바이트/0600 권한/Git 제외가 유지됨을 확인했다.
+- 기존 Google 번역 151개 구절을 별도 카드 대신 제목·문단이 있는 페이지형 문서로 표시한다. 원문/번역 어느 쪽에서든 문장·구절 호버가 연결되며, 유효한 단어 연결이 있으면 별도 색상으로 표시한다. 페이지/배율/탭 변경, 선택 드래그 중에는 이전 호버를 해제한다.
+- 새 번역 job은 버전이 명시된 HTML 단어 표식 profile을 사용한다. 파서·캐시·작업 snapshot·문자 사용량에 연결했다. marker/hash/revision/extraction/UTF-16 검증에 실패한 연결은 사용하지 않는다. 기존 캐시는 자동 재생성하지 않는다.
+- 실제 공개 구절 56자, HTML 포함 278자, 단일 Google 요청은 `UPSTREAM_HTTP_ERROR`로 실패했다. 추가 요청/자동 재시도는 하지 않았고 기존 캐시는 유지됐다. HTTP status/body가 현재 job 기록에 보존되지 않아 원인은 미확정이며 사용량은 `outcome_unknown` 예약으로 남는다. **실제 Google 단어 연결 성공은 미검증**이다.
+- 최종 검증: source 329개 통과 + 기본 native 1개 의도적 skip, 실제 PostgreSQL 1개 별도 통과, production Chromium 20개·WebKit 6개 통과. 타입/포맷/host·container build와 1,678개 build asset 경계 검사 통과. 기존 캐시는 실제 결과, 단어 연결은 synthetic 결과로 브라우저 검증했으며 의미적 번역 품질 검증과 구별한다.
+- Orca 작업 분리 및 독립 검토에서 stale provenance, 중복 marker, 애매한 문장 경계, 줄바꿈 묶음 문제를 찾아 수정했다. 상세 증거·실패한 중간 실행·한계는 [이번 검증 기록](TRANSLATION-PAGE-ACCEPTANCE.md)과 [독립 검토](TRANSLATION-PAGE-REVIEW.md)에 남긴다.
+
+## 2026-09-09 PDF·모델 선택·첫 설정 후속 작업 — 이전 기록
 
 - 설치된 Safari에서 PDF 오류를 Computer Use로 재현했다. PDF.js legacy build와 일치하는 worker, `getReader()` 기반 텍스트 추출로 브라우저 호환성 문제를 해결하고 실제 원문·페이지 전환·150% 확대를 확인했다. 원본 PDF는 변경하지 않았다.
 - 사용자가 등록한 기존 키를 재사용해 OpenAI를 `gpt-5.6-sol / high`로 활성화했다. 외부 AI·유료 AI만 허용하고 외부 번역·메타데이터는 계속 차단한다. 이는 API 키 과금이며 Codex 구독 인증 연동이 아니다.
@@ -27,8 +36,8 @@
 | 실행 구성 | React/Next.js, PostgreSQL, Qdrant, durable worker, 4개 Compose 서비스 | 운영 백업/복원 훈련, 장시간 중단/복구 검증 |
 | 개인 정보 | 로컬 세션, Origin/Host 검사, scoped MCP 토큰, 암호화 키 저장, 설정 revision | OS/디스크 탈취 방어는 별도, 자동 키 발급 연결은 재인증 필요 |
 | 논문 관리 | 읽기 전용 PDF 마운트, hash 중복 검사, 메타데이터 수정/보관, 텍스트 추출 | 스캔 PDF OCR, 복잡한 다단/수식 읽기 순서 |
-| PDF 읽기 | PDF.js canvas/text layer, 항목 hash/UTF-16 anchor, 메모·읽기 위치 | 문장 재구성과 번역 단어 정렬 정확도 평가 |
-| 번역/생성 | Google/OpenAI/Claude/Ollama/LM Studio adapter, 캐시·명시적 refresh·job·취소/사용량 기반 | 실제 추론 성공 확인, Google 문맥 품질, 인용 검증·계층 요약 |
+| PDF 읽기 | PDF.js canvas/text layer, 항목 hash/UTF-16 anchor, 메모·읽기 위치, 양방향 구절/검증된 단어 범위 호버 | 복잡한 문장 재구성·레이아웃과 의미적 정렬 정확도 평가 |
+| 번역/생성 | 페이지형 번역, HTML marker adapter, 버전별 캐시·명시적 refresh·job·취소/사용량 기반 | 실제 Google marker 성공, 문맥 품질, 인용 검증·계층 요약 |
 | 초기 설정 | 유료/로컬 모델 select, 기능별 선택, 분리 검증, 첫 설정·개발자 replay | 미확인 모델의 추가 규격 profile, 실제 제공자별 추론 검증 |
 | 분석 JSON | revision별 구조화 snapshot, 원자적 파일 교체, partial 상태와 coverage | 실제 AI 관계/중요도/reference 추출 통합 |
 | Vector | Qdrant 컨테이너와 client adapter | embedding 생성·색인·재색인·실제 유사도 검색 전체 연결 |
@@ -36,7 +45,7 @@
 | 학습/Wiki | 동적 lesson block, 선행관계 DAG, revision snapshot, Wiki 이력, 실습·회고 | 더 넓은 커리큘럼과 실제 학습 사용성 검증 |
 | API/MCP | 공통 도메인, REST, modern MCP 도구/리소스 | OpenAPI 산출물, 기타 MCP 클라이언트 호환성 |
 
-번역 공급자가 단어 alignment를 반환한다고 가정하지 않는다. 현재 번역 결과의 alignment는 unavailable이며, 대응하지 않는 단어를 그럴듯하게 하이라이트하지 않는다. 원문 PDF TextItem anchor 검증은 번역 문장/단어 정렬 검증과 다르다.
+Google Basic API가 별도 단어 alignment를 반환한다고 가정하지 않는다. 새 profile은 반환 HTML에서 보존된 marker를 문자열 hash/범위와 함께 검증한다. 기존 결과 또는 marker가 없는 결과는 문장·구절로 연결한다. 구조적으로 유효한 marker도 의미적으로 정확한 번역 대응을 보장하지 않는다. 원문 PDF TextItem anchor 검증은 번역 품질 검증과 다르다.
 
 요약 요청은 선택 범위의 텍스트를 사용한다. 긴 논문을 자동으로 잘라 전체 분석으로 표시하지 않고 제한을 보고한다. 분석 JSON의 빈 relations/references는 해당 논문에 관계가 없다는 뜻이 아니라 아직 분석하지 않았다는 뜻이다. Qdrant 컨테이너가 실행 중인 것은 vector 기능 완성과 다르다.
 
@@ -61,8 +70,8 @@
 ## 이번에 하지 않은 일
 
 - OpenAI 키 신규 발급/회전: setup connector의 자동 발급은 실패했으며, 이후 사용자가 직접 등록한 기존 키를 사용했다. 이번 작업에서 키를 새로 발급했다고 표시하지 않는다.
-- 성공한 실제 OpenAI 추론, Claude/Google 실제 유료 요청, 로컬 모델 다운로드/실행. OpenAI 제한 요청 2회의 미완료 결과는 상단과 검증 기록에 별도 보존한다.
-- 외부 계정/논문 내용 업로드, 원격 Git push, main 릴리스.
+- 이번 변경 중 OpenAI/Claude 재호출, 로컬 모델 다운로드/실행. 사용자가 알린 기존 API 성공과 별개로, 새 Google marker 실제 요청 1회는 실패했으며 위에 구분했다.
+- 사용자 개인 논문의 외부 업로드, 원격 Git push, main 릴리스. 외부 전송은 공개 PDF의 짧은 구절 1개로 한정했다.
 - 실제 비용 정확도, Google 번역 word alignment 품질, 전체 RAG/vector 파이프라인 완료 선언.
 - 설정 화면의 키 변경은 여전히 키 파일과 설정 파일을 하나의 transaction으로 묶지 않는다. 수동 import CLI에만 새 암호화 항목을 먼저 저장하고 참조를 교체하는 순서를 추가했다. 완전한 다중 파일 transaction/복구 journal은 아니며 과거 키 버전 복원 UI는 없다. 모든 경로에서 credential revision과 provider snapshot 재검사로 이전 작업의 잘못된 키 사용을 차단한다.
 - 페이지 번역의 부모 job을 일괄 취소하는 기능은 공유 자식 job 처리 규칙이 완성되지 않아 명시적 501로 차단한다. 취소됐다고 표시하면서 자식 호출을 계속 실행하지 않는다. 개별 소유 job 취소 또는 설정의 번역 허용 해제를 사용한다. Google 요청은 현재 TextItem별 호출이며 batch 최적화도 남아 있다.
@@ -70,8 +79,8 @@
 
 ## 다음 구현 순서
 
-1. 기존 키 등록과 Sol/high 설정은 완료했다. 추가 유료 진단을 명시적으로 진행할 경우 안전한 구조화 오류 정보로 실제 추론 미완료 원인을 조사한다. 근거 없이 키를 재발급하거나 모델·추론 강도·요청 한도를 바꾸지 않는다.
-2. 실제 Google 번역에 문장 분할·alignment profile을 연결하고 다단/회전/수식 PDF 평가 fixture를 만든다.
+1. 새 HTML 단어 표식 요청의 안전한 HTTP status/오류 진단을 보강하고, 별도 허용한 단일 요청으로 실제 Google 응답을 확인한다. 근거 없이 키·모델·한도를 변경하거나 실패한 요청을 자동 반복하지 않는다.
+2. 문맥 단위 번역/batch와 다단·회전·수식 평가 fixture를 추가한다. 이번 페이지형 UI가 전체 페이지 문맥을 한 번에 번역하는 backend 변경을 의미하지는 않는다.
 3. 로컬 embedding profile을 선택하고 Qdrant 색인/재색인 및 출처 기반 검색을 연결한다.
 4. 검색 근거를 사용하는 대화와 분석/reference/중요도 결과를 cache 및 analysis JSON에 연결한다.
 5. 사용량 가격표·한도 경합·복구 테스트와 백업/복원까지 검증한 후 안정 버전 승격을 판단한다.

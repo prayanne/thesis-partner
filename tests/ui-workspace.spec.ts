@@ -346,6 +346,11 @@ test("curriculum archive and restore preserve its records", async ({
     .click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
   await page.getByLabel("보관된 항목 포함", { exact: true }).check();
+  // Wait for the refreshed archive-inclusive list, not the stale pre-archive
+  // option that can still exist while the new request is in flight.
+  await expect(
+    page.getByLabel("커리큘럼 선택").locator(`option[value="${curriculumId}"]`),
+  ).toContainText("보관됨");
   await page.getByLabel("커리큘럼 선택").selectOption(curriculumId);
   await page
     .getByRole("button", { name: "커리큘럼 복구", exact: true })
