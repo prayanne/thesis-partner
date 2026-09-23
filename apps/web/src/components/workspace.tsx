@@ -12,6 +12,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   LockKeyhole,
+  FolderKanban,
 } from "lucide-react";
 import { api, send, errorText } from "../lib/api";
 import { ErrorState, Loading } from "./ui";
@@ -52,6 +53,7 @@ export function Workspace({ children }: { children: ReactNode }) {
   if (!session) return <Login onSuccess={() => setSession(true)} />;
   const links = [
     { href: "/", label: "라이브러리", icon: Library },
+    { href: "/projects", label: "프로젝트", icon: FolderKanban },
     { href: "/wiki", label: "개념 위키", icon: BookOpen },
     { href: "/curriculum", label: "학습 커리큘럼", icon: GraduationCap },
   ];
@@ -83,7 +85,9 @@ export function Workspace({ children }: { children: ReactNode }) {
             <Link
               title={label}
               className={
-                path === href || (href === "/" && path.startsWith("/papers"))
+                path === href ||
+                (href === "/" && path.startsWith("/papers")) ||
+                (href === "/projects" && path.startsWith("/projects/"))
                   ? "nav-link active"
                   : "nav-link"
               }
@@ -148,11 +152,13 @@ export function Workspace({ children }: { children: ReactNode }) {
               ? "Library"
               : path.startsWith("/papers")
                 ? "Reader"
-                : path === "/wiki"
-                  ? "Wiki"
-                  : path === "/curriculum"
-                    ? "Curriculum"
-                    : "Configuration"}
+                : path.startsWith("/projects")
+                  ? "Projects"
+                  : path === "/wiki"
+                    ? "Wiki"
+                    : path === "/curriculum"
+                      ? "Curriculum"
+                      : "Configuration"}
           </span>
           <span className="local-badge">
             <span className="small-dot" />

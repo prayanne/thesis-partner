@@ -71,6 +71,43 @@ export interface Wiki {
   updatedAt?: string;
   state?: string;
 }
+export type ProjectStatus = "active" | "paused" | "completed";
+export type ProjectMaterialKind = "paper" | "wiki" | "link" | "note";
+export interface ProjectMaterial {
+  id: string;
+  projectId: string;
+  kind: ProjectMaterialKind;
+  title: string;
+  paperId?: string | null;
+  wikiId?: string | null;
+  sourceUrl?: string | null;
+  content: string;
+  note: string;
+  position: number;
+  revision: number;
+  archivedAt?: string | null;
+  paper?: Pick<Paper, "id" | "title" | "abstract" | "tags" | "metadata"> & {
+    archivedAt?: string | null;
+  };
+  wiki?: Pick<Wiki, "id" | "title" | "markdown"> & {
+    archivedAt?: string | null;
+  };
+}
+export interface ResearchProject {
+  id: string;
+  title: string;
+  domain: string;
+  description: string;
+  summaryMarkdown: string;
+  status: ProjectStatus;
+  revision: number;
+  archivedAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  materialCount?: number;
+  paperCount?: number;
+  materials?: ProjectMaterial[];
+}
 export type BlockKind =
   | "markdown"
   | "paper_reading"

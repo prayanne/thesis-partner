@@ -52,6 +52,8 @@ function requireAnyScope(principal: Principal, scopes: string[]) {
 export function operationScope(method: string, path: string[]) {
   const write = !["GET", "HEAD"].includes(method);
   if (path[0] === "wiki") return `wiki:${write ? "write" : "read"}`;
+  if (["projects", "project-materials"].includes(path[0] ?? ""))
+    return `library:${write ? "write" : "read"}`;
   if (
     [
       "curricula",
@@ -75,6 +77,8 @@ export function operationScope(method: string, path: string[]) {
 const mutableTables: Record<string, string> = {
   papers: "papers",
   wiki: "wiki_pages",
+  projects: "research_projects",
+  "project-materials": "project_materials",
   curricula: "curricula",
   "curriculum-items": "curriculum_items",
   annotations: "annotations",
@@ -143,7 +147,7 @@ async function archive(
     }
     const result = await one(
       tx,
-      `UPDATE ${table} SET archived_at=${restore ? "NULL" : "now()"},revision=revision+1${["papers", "wiki_pages", "curricula", "curriculum_items", "annotations", "learning_resources"].includes(table) ? ",updated_at=now()" : ""} WHERE id=$1 RETURNING *`,
+      `UPDATE ${table} SET archived_at=${restore ? "NULL" : "now()"},revision=revision+1${["papers", "wiki_pages", "research_projects", "project_materials", "curricula", "curriculum_items", "annotations", "learning_resources"].includes(table) ? ",updated_at=now()" : ""} WHERE id=$1 RETURNING *`,
       [id],
     );
     if (table === "papers") await snapshotAnalysis(tx, id);
@@ -152,8 +156,64 @@ async function archive(
         "UPDATE curricula SET revision=revision+1,updated_at=now() WHERE id=$1",
         [row.curriculum_id],
       );
+    if (table === "project_materials")
+      await tx.query(
+        "UPDATE research_projects SET revision=revision+1,updated_at=now() WHERE id=$1",
+        [row.project_id],
+      );
     return camel(result);
   });
+}
+
+function projectMaterial(row: Row) {
+  const material = camel(row);
+  for (const key of [
+    "paperTitle",
+    "paperAbstract",
+    "paperTags",
+    "paperMetadata",
+    "paperArchivedAt",
+    "wikiTitle",
+    "wikiMarkdown",
+    "wikiArchivedAt",
+  ])
+    delete material[key];
+  if (row.paper_id)
+    material.paper = {
+      id: row.paper_id,
+      title: row.paper_title,
+      abstract: row.paper_abstract,
+      tags: row.paper_tags,
+      metadata: row.paper_metadata,
+      archivedAt: row.paper_archived_at,
+    };
+  if (row.wiki_id)
+    material.wiki = {
+      id: row.wiki_id,
+      title: row.wiki_title,
+      markdown: row.wiki_markdown,
+      archivedAt: row.wiki_archived_at,
+    };
+  return material;
+}
+
+async function getProject(db: Database, id: string, includeArchived = false) {
+  const project = camel(
+    await one(db, "SELECT * FROM research_projects WHERE id=$1", [id]),
+  );
+  const materials = await db.query(
+    `SELECT m.*,
+      p.title AS paper_title,p.abstract AS paper_abstract,p.tags AS paper_tags,p.metadata AS paper_metadata,p.archived_at AS paper_archived_at,
+      w.title AS wiki_title,wr.markdown AS wiki_markdown,w.archived_at AS wiki_archived_at
+     FROM project_materials m
+     LEFT JOIN papers p ON p.id=m.paper_id
+     LEFT JOIN wiki_pages w ON w.id=m.wiki_id
+     LEFT JOIN wiki_revisions wr ON wr.id=w.current_revision_id
+     WHERE m.project_id=$1 AND ($2::boolean OR m.archived_at IS NULL)
+     ORDER BY m.position,m.created_at`,
+    [id, includeArchived],
+  );
+  return { ...project, materials: materials.map(projectMaterial) };
 }
 export async function executeOperation(
   input: OperationInput,
@@ -629,6 +689,241 @@ export async function executeOperation(
         status: 202,
       };
     }
+  }
+  if (resource === "projects" && !id && method === "GET")
+    return {
+      data: (
+        await db.query(
+          `SELECT p.*,
+            count(m.id) FILTER (WHERE m.archived_at IS NULL)::integer AS material_count,
+            count(m.id) FILTER (WHERE m.archived_at IS NULL AND m.kind='paper')::integer AS paper_count
+           FROM research_projects p
+           LEFT JOIN project_materials m ON m.project_id=p.id
+           WHERE ($1::boolean OR p.archived_at IS NULL)
+             AND ($2='' OR p.title ILIKE '%'||$2||'%' OR p.domain ILIKE '%'||$2||'%' OR p.description ILIKE '%'||$2||'%')
+           GROUP BY p.id
+           ORDER BY p.updated_at DESC`,
+          [includeArchived, query.get("q") ?? ""],
+        )
+      ).map(camel),
+    };
+  if (resource === "projects" && !id && method === "POST") {
+    const value = z
+      .object({
+        title: z.string().trim().min(1).max(500),
+        domain: z.string().trim().min(1).max(300),
+        description: z.string().max(20000).default(""),
+        summaryMarkdown: z.string().max(200000).default(""),
+        status: z.enum(["active", "paused", "completed"]).default("active"),
+      })
+      .strict()
+      .parse(body);
+    return {
+      data: camel(
+        await one(
+          db,
+          "INSERT INTO research_projects(title,domain,description,summary_markdown,status) VALUES($1,$2,$3,$4,$5) RETURNING *",
+          [
+            value.title,
+            value.domain,
+            value.description,
+            value.summaryMarkdown,
+            value.status,
+          ],
+        ),
+      ),
+      status: 201,
+    };
+  }
+  if (resource === "projects" && id && !action && method === "GET")
+    return { data: await getProject(db, id, includeArchived) };
+  if (resource === "projects" && id && !action && method === "PATCH") {
+    const patch = z
+      .object({
+        expectedRevision: z.number().int(),
+        title: z.string().trim().min(1).max(500).optional(),
+        domain: z.string().trim().min(1).max(300).optional(),
+        description: z.string().max(20000).optional(),
+        summaryMarkdown: z.string().max(200000).optional(),
+        status: z.enum(["active", "paused", "completed"]).optional(),
+      })
+      .strict()
+      .parse(body);
+    return {
+      data: await db.transaction(async (tx) => {
+        const current = await one(
+          tx,
+          "SELECT * FROM research_projects WHERE id=$1 FOR UPDATE",
+          [id],
+        );
+        assertRevision(current, patch.expectedRevision);
+        return camel(
+          await one(
+            tx,
+            `UPDATE research_projects
+             SET title=$2,domain=$3,description=$4,summary_markdown=$5,status=$6,revision=revision+1,updated_at=now()
+             WHERE id=$1 RETURNING *`,
+            [
+              id,
+              patch.title ?? current.title,
+              patch.domain ?? current.domain,
+              patch.description ?? current.description,
+              patch.summaryMarkdown ?? current.summary_markdown,
+              patch.status ?? current.status,
+            ],
+          ),
+        );
+      }),
+    };
+  }
+  if (
+    resource === "projects" &&
+    id &&
+    action === "materials" &&
+    method === "POST"
+  ) {
+    const material = z
+      .discriminatedUnion("kind", [
+        z
+          .object({
+            kind: z.literal("paper"),
+            paperId: z.string().uuid(),
+            note: z.string().max(50000).default(""),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal("wiki"),
+            wikiId: z.string().uuid(),
+            note: z.string().max(50000).default(""),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal("link"),
+            title: z.string().trim().min(1).max(500),
+            sourceUrl: z.string().url().max(5000),
+            content: z.string().max(100000).default(""),
+            note: z.string().max(50000).default(""),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal("note"),
+            title: z.string().trim().min(1).max(500),
+            content: z.string().min(1).max(100000),
+            note: z.string().max(50000).default(""),
+          })
+          .strict(),
+      ])
+      .parse(body);
+    return {
+      data: await db.transaction(async (tx) => {
+        const project = await one(
+          tx,
+          "SELECT * FROM research_projects WHERE id=$1 FOR UPDATE",
+          [id],
+        );
+        if (project.archived_at)
+          throw new DomainError(
+            "PROJECT_ARCHIVED",
+            "Restore the project before adding materials.",
+            409,
+          );
+        let title: string,
+          paperId: string | null = null,
+          wikiId: string | null = null,
+          sourceUrl: string | null = null,
+          content = "";
+        if (material.kind === "paper") {
+          const linked = await one(
+            tx,
+            "SELECT title FROM papers WHERE id=$1 AND archived_at IS NULL",
+            [material.paperId],
+          );
+          title = linked.title;
+          paperId = material.paperId;
+        } else if (material.kind === "wiki") {
+          const linked = await one(
+            tx,
+            "SELECT title FROM wiki_pages WHERE id=$1 AND archived_at IS NULL",
+            [material.wikiId],
+          );
+          title = linked.title;
+          wikiId = material.wikiId;
+        } else {
+          title = material.title;
+          content = material.content;
+          if (material.kind === "link") sourceUrl = material.sourceUrl;
+        }
+        const [position] = await tx.query(
+          "SELECT coalesce(max(position),-1)+1 AS value FROM project_materials WHERE project_id=$1",
+          [id],
+        );
+        const created = await one(
+          tx,
+          `INSERT INTO project_materials(project_id,kind,title,paper_id,wiki_id,source_url,content,note,position)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+          [
+            id,
+            material.kind,
+            title,
+            paperId,
+            wikiId,
+            sourceUrl,
+            content,
+            material.note,
+            position!.value,
+          ],
+        );
+        await tx.query(
+          "UPDATE research_projects SET revision=revision+1,updated_at=now() WHERE id=$1",
+          [id],
+        );
+        return camel(created);
+      }),
+      status: 201,
+    };
+  }
+  if (resource === "project-materials" && id && !action && method === "PATCH") {
+    const patch = z
+      .object({
+        expectedRevision: z.number().int(),
+        title: z.string().trim().min(1).max(500).optional(),
+        content: z.string().max(100000).optional(),
+        note: z.string().max(50000).optional(),
+        position: z.number().int().min(0).optional(),
+      })
+      .strict()
+      .parse(body);
+    return {
+      data: await db.transaction(async (tx) => {
+        const current = await one(
+          tx,
+          "SELECT * FROM project_materials WHERE id=$1 FOR UPDATE",
+          [id],
+        );
+        assertRevision(current, patch.expectedRevision);
+        const changed = await one(
+          tx,
+          `UPDATE project_materials
+           SET title=$2,content=$3,note=$4,position=$5,revision=revision+1,updated_at=now()
+           WHERE id=$1 RETURNING *`,
+          [
+            id,
+            patch.title ?? current.title,
+            patch.content ?? current.content,
+            patch.note ?? current.note,
+            patch.position ?? current.position,
+          ],
+        );
+        await tx.query(
+          "UPDATE research_projects SET revision=revision+1,updated_at=now() WHERE id=$1",
+          [current.project_id],
+        );
+        return camel(changed);
+      }),
+    };
   }
   if (resource === "wiki" && !id && method === "GET")
     return {

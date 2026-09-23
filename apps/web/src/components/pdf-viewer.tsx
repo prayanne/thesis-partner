@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { PointerEvent } from "react";
+import type { PointerEvent, WheelEvent } from "react";
 import type {
   PDFDocumentProxy,
   PageViewport,
@@ -72,6 +72,7 @@ export function PdfViewer({
   activeAnchor,
   onTextHover,
   hoverTargets = noHoverTargets,
+  onPageStep,
 }: {
   paperId: string;
   revisionId: string;
@@ -84,6 +85,7 @@ export function PdfViewer({
   activeAnchor?: SourceAnchor | null;
   onTextHover?: (hit: PdfTextHover | null) => void;
   hoverTargets?: PdfHoverTarget[];
+  onPageStep?: (direction: -1 | 1) => boolean;
 }) {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const signature = `${paperId}:${revisionId}:${pageNumber}:${scale}:${loadAttempt}`;
@@ -129,6 +131,10 @@ export function PdfViewer({
   const [viewport, setViewport] = useState<PageViewport | null>(null);
   const [ocr, setOcr] = useState(false);
   const stage = useRef<HTMLDivElement>(null);
+  const scroll = useRef<HTMLDivElement>(null);
+  const topScroll = useRef<HTMLDivElement>(null);
+  const pendingPageTurn = useRef<-1 | 1 | null>(null);
+  const pageTurnLocked = useRef(false);
   const canvas = useRef<HTMLCanvasElement>(null);
   const layerElement = useRef<HTMLDivElement>(null);
   const layer = useRef<TextLayer | null>(null);
@@ -138,6 +144,44 @@ export function PdfViewer({
   const sourceBox = useRef<number[]>([]);
   const callback = useRef(onPages);
   callback.current = onPages;
+  useLayoutEffect(() => {
+    if (loading || !scroll.current) return;
+    const frame = requestAnimationFrame(() => {
+      const container = scroll.current;
+      if (!container) return;
+      container.scrollTop =
+        pendingPageTurn.current === -1
+          ? Math.max(0, container.scrollHeight - container.clientHeight)
+          : 0;
+      pendingPageTurn.current = null;
+      pageTurnLocked.current = false;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [pageNumber, loading, viewport?.height]);
+
+  function syncHorizontal(
+    source: HTMLDivElement,
+    target: HTMLDivElement | null,
+  ) {
+    if (target && Math.abs(target.scrollLeft - source.scrollLeft) > 0.5)
+      target.scrollLeft = source.scrollLeft;
+  }
+
+  function pageWheel(event: WheelEvent<HTMLDivElement>) {
+    const container = scroll.current;
+    if (!container || !onPageStep || pageTurnLocked.current) return;
+    const atTop = container.scrollTop <= 1;
+    const atBottom =
+      container.scrollTop + container.clientHeight >=
+      container.scrollHeight - 1;
+    const direction =
+      event.deltaY > 0 && atBottom ? 1 : event.deltaY < 0 && atTop ? -1 : null;
+    if (!direction || !onPageStep(direction)) return;
+    event.preventDefault();
+    pageTurnLocked.current = true;
+    pendingPageTurn.current = direction;
+    clearHover();
+  }
   useEffect(() => {
     clearHover();
     return clearHover;
@@ -620,104 +664,128 @@ export function PdfViewer({
       ),
   );
   return (
-    <div className="pdf-scroll" onPointerLeave={clearHover}>
-      {loading && <Loading label="PDF 페이지를 불러오는 중" />}
-      {error && (
-        <ErrorState error={error} retry={() => setLoadAttempt((n) => n + 1)} />
-      )}{" "}
-      {ocr && !loading && (
-        <div className="notice">
-          텍스트를 찾을 수 없습니다. 스캔 문서라면 OCR이 필요합니다.
-        </div>
-      )}
+    <div className="pdf-viewer-shell">
       <div
-        ref={stage}
-        className="pdf-stage"
-        data-page-number={pageNumber}
-        data-paper-revision-id={revisionId}
-        data-pdf-scale={scale}
-        data-pdf-rotation={rendered?.viewport.rotation}
-        data-pdf-hover-ready={Boolean(hoverReady)}
-        data-pdf-selecting={selecting}
-        style={{
-          width: viewport?.width,
-          height: viewport?.height,
-          display: error ? "none" : undefined,
-          visibility: loading ? "hidden" : undefined,
-        }}
-        onMouseUp={() => void selectionChanged()}
-        onKeyUp={() => void selectionChanged()}
+        className="pdf-top-scroll"
+        ref={topScroll}
+        aria-label="PDF 가로 스크롤"
+        role="region"
+        onScroll={(event) =>
+          syncHorizontal(event.currentTarget, scroll.current)
+        }
       >
-        <canvas ref={canvas} aria-label={`PDF 원문 ${pageNumber}페이지`} />
+        <div style={{ width: viewport?.width ?? 0 }} />
+      </div>
+      <div
+        className="pdf-scroll"
+        ref={scroll}
+        onPointerLeave={clearHover}
+        onWheel={pageWheel}
+        onScroll={(event) =>
+          syncHorizontal(event.currentTarget, topScroll.current)
+        }
+      >
+        {loading && <Loading label="PDF 페이지를 불러오는 중" />}
+        {error && (
+          <ErrorState
+            error={error}
+            retry={() => setLoadAttempt((n) => n + 1)}
+          />
+        )}{" "}
+        {ocr && !loading && (
+          <div className="notice">
+            텍스트를 찾을 수 없습니다. 스캔 문서라면 OCR이 필요합니다.
+          </div>
+        )}
         <div
-          className="textLayer"
-          ref={layerElement}
-          data-pdf-text-layer="true"
-          onPointerMove={textPointerMoved}
-          onPointerLeave={clearHover}
-          onPointerDown={() => {
-            pointerSelecting.current = true;
-            setSelecting(true);
-            clearHover();
+          ref={stage}
+          className="pdf-stage"
+          data-page-number={pageNumber}
+          data-paper-revision-id={revisionId}
+          data-pdf-scale={scale}
+          data-pdf-rotation={rendered?.viewport.rotation}
+          data-pdf-hover-ready={Boolean(hoverReady)}
+          data-pdf-selecting={selecting}
+          style={{
+            width: viewport?.width,
+            height: viewport?.height,
+            display: error ? "none" : undefined,
+            visibility: loading ? "hidden" : undefined,
           }}
-          onPointerCancel={clearHover}
-        />
-        <div className="pdf-highlights" aria-hidden="true">
-          {viewport &&
-            anchors.flatMap(({ id, anchor, active }) =>
-              (anchor?.rects ?? [])
-                .filter(
-                  (rect) => rect.length === 4 && rect.every(Number.isFinite),
-                )
-                .map((rect, index) => (
-                  <div
-                    className={`pdf-highlight ${active ? "active" : ""}`}
-                    key={`${id}-${index}`}
-                    style={viewportRect(rect, (r) => [
-                      ...viewport.convertToViewportPoint(r[0], r[1]),
-                      ...viewport.convertToViewportPoint(r[2], r[3]),
-                    ])}
-                  />
-                )),
-            )}
-        </div>
-        <div
-          className="pdf-highlights pdf-hover-overlays"
-          aria-hidden="true"
-          style={{ pointerEvents: "none" }}
-          data-pdf-hover-overlay="true"
+          onMouseUp={() => void selectionChanged()}
+          onKeyUp={() => void selectionChanged()}
         >
-          {hoverReady &&
-            !selecting &&
-            hoverGeometry?.verified === verified &&
-            hoverGeometry.targets === hoverTargets &&
-            [...hoverGeometry.rects]
-              .sort(
-                (a, b) =>
-                  Number(a.target.kind === "word") -
-                  Number(b.target.kind === "word"),
-              )
-              .map(({ target, rect }, index) => (
-                <div
-                  key={`${target.segmentId}-${target.kind}-${target.sourceRange.start}-${target.sourceRange.end}-${index}`}
-                  className={`pdf-hover-${target.kind}`}
-                  style={{
-                    ...rect,
-                    position: "absolute",
-                    pointerEvents: "none",
-                  }}
-                  data-hover-kind={target.kind}
-                  data-segment-id={target.segmentId}
-                  data-source-start={target.sourceRange.start}
-                  data-source-end={target.sourceRange.end}
-                  data-paper-revision-id={target.paperRevisionId}
-                  data-extraction-run-id={target.extractionRunId}
-                  data-source-text-hash={target.sourceTextHash}
-                  data-page-number={target.pageNumber}
-                  data-pdf-scale={scale}
-                  data-pdf-rotation={rendered?.viewport.rotation}
-                />
-              ))}
+          <canvas ref={canvas} aria-label={`PDF 원문 ${pageNumber}페이지`} />
+          <div
+            className="textLayer"
+            ref={layerElement}
+            data-pdf-text-layer="true"
+            onPointerMove={textPointerMoved}
+            onPointerLeave={clearHover}
+            onPointerDown={() => {
+              pointerSelecting.current = true;
+              setSelecting(true);
+              clearHover();
+            }}
+            onPointerCancel={clearHover}
+          />
+          <div className="pdf-highlights" aria-hidden="true">
+            {viewport &&
+              anchors.flatMap(({ id, anchor, active }) =>
+                (anchor?.rects ?? [])
+                  .filter(
+                    (rect) => rect.length === 4 && rect.every(Number.isFinite),
+                  )
+                  .map((rect, index) => (
+                    <div
+                      className={`pdf-highlight ${active ? "active" : ""}`}
+                      key={`${id}-${index}`}
+                      style={viewportRect(rect, (r) => [
+                        ...viewport.convertToViewportPoint(r[0], r[1]),
+                        ...viewport.convertToViewportPoint(r[2], r[3]),
+                      ])}
+                    />
+                  )),
+              )}
+          </div>
+          <div
+            className="pdf-highlights pdf-hover-overlays"
+            aria-hidden="true"
+            style={{ pointerEvents: "none" }}
+            data-pdf-hover-overlay="true"
+          >
+            {hoverReady &&
+              !selecting &&
+              hoverGeometry?.verified === verified &&
+              hoverGeometry.targets === hoverTargets &&
+              [...hoverGeometry.rects]
+                .sort(
+                  (a, b) =>
+                    Number(a.target.kind === "word") -
+                    Number(b.target.kind === "word"),
+                )
+                .map(({ target, rect }, index) => (
+                  <div
+                    key={`${target.segmentId}-${target.kind}-${target.sourceRange.start}-${target.sourceRange.end}-${index}`}
+                    className={`pdf-hover-${target.kind}`}
+                    style={{
+                      ...rect,
+                      position: "absolute",
+                      pointerEvents: "none",
+                    }}
+                    data-hover-kind={target.kind}
+                    data-segment-id={target.segmentId}
+                    data-source-start={target.sourceRange.start}
+                    data-source-end={target.sourceRange.end}
+                    data-paper-revision-id={target.paperRevisionId}
+                    data-extraction-run-id={target.extractionRunId}
+                    data-source-text-hash={target.sourceTextHash}
+                    data-page-number={target.pageNumber}
+                    data-pdf-scale={scale}
+                    data-pdf-rotation={rendered?.viewport.rotation}
+                  />
+                ))}
+          </div>
         </div>
       </div>
     </div>
