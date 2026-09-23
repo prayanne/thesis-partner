@@ -204,6 +204,36 @@ export const wikiRevisions = pgTable(
   },
   (t) => [uniqueIndex("wiki_revision_number").on(t.wikiId, t.revision)],
 );
+export const researchProjects = pgTable("research_projects", {
+  id: id(),
+  title: text("title").notNull(),
+  domain: text("domain").notNull(),
+  description: text("description").notNull(),
+  summaryMarkdown: text("summary_markdown").notNull(),
+  status: text("status").notNull().default("active"),
+  revision: revision(),
+  archivedAt: archived(),
+  createdAt: created(),
+  updatedAt: updated(),
+});
+export const projectMaterials = pgTable("project_materials", {
+  id: id(),
+  projectId: uuid("project_id")
+    .notNull()
+    .references(() => researchProjects.id),
+  kind: text("kind").notNull(),
+  title: text("title").notNull(),
+  paperId: uuid("paper_id").references(() => papers.id),
+  wikiId: uuid("wiki_id").references(() => wikiPages.id),
+  sourceUrl: text("source_url"),
+  content: text("content").notNull(),
+  note: text("note").notNull(),
+  position: integer("position").notNull().default(0),
+  revision: revision(),
+  archivedAt: archived(),
+  createdAt: created(),
+  updatedAt: updated(),
+});
 export const curricula = pgTable("curricula", {
   id: id(),
   title: text("title").notNull(),

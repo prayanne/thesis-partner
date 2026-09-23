@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createTestDatabase, type Database } from "../packages/db/src/testing";
+import type { Row } from "../packages/db/src/client";
 import { migrate } from "../packages/db/src/migrations";
 import { randomUUID } from "node:crypto";
 import {
@@ -31,7 +32,7 @@ describe("PostgreSQL durable core via explicit PGlite test adapter", () => {
   it("applies versioned migrations idempotently and enforces immutable wiki history", async () => {
     const db = await database();
     await migrate(db);
-    expect((await db.query("SELECT * FROM schema_migrations")).length).toBe(4);
+    expect((await db.query("SELECT * FROM schema_migrations")).length).toBe(5);
     const wiki = await saveWiki(db, {
       title: "Contracts",
       slug: "contracts",
@@ -72,6 +73,133 @@ describe("PostgreSQL durable core via explicit PGlite test adapter", () => {
         wiki.id,
       ]),
     ).rejects.toThrow("immutable");
+  });
+  it("organizes papers, Wiki, links and notes in revisioned research projects", async () => {
+    const db = await database();
+    const principal = { kind: "session" as const, scopes: ["*"] };
+    const [paper] = await db.query(
+      "INSERT INTO papers(title,abstract,tags) VALUES('Project paper','Evidence for the project',ARRAY['retrieval']) RETURNING *",
+    );
+    const wiki = await saveWiki(db, {
+      title: "Project concept",
+      slug: "project-concept",
+      markdown: "## Definition\n\nA grounded concept.",
+    });
+    const created = (
+      await executeOperation(
+        {
+          method: "POST",
+          path: "projects",
+          body: {
+            title: "Grounded retrieval",
+            domain: "Information Retrieval",
+            description: "Compare evidence across sources.",
+          },
+        },
+        { db, principal },
+      )
+    ).data as Row;
+    const additions = [
+      { kind: "paper", paperId: paper!.id, note: "Primary evidence" },
+      { kind: "wiki", wikiId: wiki.id, note: "Working definition" },
+      {
+        kind: "link",
+        title: "Evaluation guide",
+        sourceUrl: "https://example.com/evaluation",
+        content: "External checklist",
+        note: "Compare metrics",
+      },
+      {
+        kind: "note",
+        title: "Open question",
+        content: "How does corpus drift change recall?",
+        note: "Follow-up experiment",
+      },
+    ];
+    for (const body of additions)
+      await executeOperation(
+        {
+          method: "POST",
+          path: `projects/${created.id}/materials`,
+          body,
+        },
+        { db, principal },
+      );
+    const detail = (
+      await executeOperation(
+        { method: "GET", path: `projects/${created.id}` },
+        { db, principal },
+      )
+    ).data as Row;
+    expect(detail.materials.map((item: { kind: string }) => item.kind)).toEqual(
+      ["paper", "wiki", "link", "note"],
+    );
+    expect(detail.materials[0].paper).toMatchObject({
+      id: paper!.id,
+      abstract: "Evidence for the project",
+    });
+    expect(detail.materials[1].wiki.markdown).toContain("grounded concept");
+    const summary = (
+      await executeOperation(
+        {
+          method: "PATCH",
+          path: `projects/${created.id}`,
+          body: {
+            expectedRevision: detail.revision,
+            summaryMarkdown:
+              "## Synthesis\n\nCurrent evidence and remaining gaps.",
+          },
+        },
+        { db, principal },
+      )
+    ).data as Row;
+    expect(summary.summaryMarkdown).toContain("Synthesis");
+    await expect(
+      executeOperation(
+        {
+          method: "PATCH",
+          path: `projects/${created.id}`,
+          body: {
+            expectedRevision: detail.revision,
+            title: "Stale edit",
+          },
+        },
+        { db, principal },
+      ),
+    ).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    const note = detail.materials[3];
+    const archived = (
+      await executeOperation(
+        {
+          method: "DELETE",
+          path: `project-materials/${note.id}`,
+          body: { expectedRevision: note.revision },
+        },
+        { db, principal },
+      )
+    ).data as Row;
+    const active = (
+      await executeOperation(
+        { method: "GET", path: `projects/${created.id}` },
+        { db, principal },
+      )
+    ).data as Row;
+    expect(active.materials).toHaveLength(3);
+    await executeOperation(
+      {
+        method: "POST",
+        path: `project-materials/${note.id}/restore`,
+        body: { expectedRevision: archived.revision },
+      },
+      { db, principal },
+    );
+    const restored = (
+      await executeOperation(
+        { method: "GET", path: `projects/${created.id}` },
+        { db, principal },
+      )
+    ).data as Row;
+    expect(restored.materials).toHaveLength(4);
   });
   it("enforces curriculum DAG and retains the completed lesson snapshot after editing", async () => {
     const db = await database();

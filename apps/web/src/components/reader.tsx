@@ -9,6 +9,8 @@ import {
   Sparkles,
   Send,
   BookmarkPlus,
+  PanelRightClose,
+  PanelRightOpen,
 } from "lucide-react";
 import { useResource, listOf, send, errorText, dateLabel } from "../lib/api";
 import type {
@@ -37,6 +39,7 @@ export function ReaderPage({ id }: { id: string }) {
   const [pages, setPages] = useState(0);
   const [scale, setScale] = useState(1);
   const [panel, setPanel] = useState<Panel>("translation");
+  const [panelOpen, setPanelOpen] = useState(true);
   const [selection, setSelection] = useState<PdfSelection | null>(null);
   const [activeAnchor, setActiveAnchor] = useState<SourceAnchor | null>(null);
   const [readingFocus, setReadingFocus] = useState<ReadingFocus>(null);
@@ -165,7 +168,7 @@ export function ReaderPage({ id }: { id: string }) {
           </small>
         </div>
       </header>
-      <div className="reader-columns">
+      <div className={`reader-columns ${panelOpen ? "" : "panel-collapsed"}`}>
         <section className="pdf-column" aria-label="PDF 원문">
           <div className="reader-controls">
             <button
@@ -218,6 +221,20 @@ export function ReaderPage({ id }: { id: string }) {
             >
               읽기 위치 저장
             </button>
+            <span className="control-separator" />
+            <button
+              className="button text small reader-panel-toggle"
+              aria-expanded={panelOpen}
+              aria-controls="reader-work-panel"
+              onClick={() => setPanelOpen((open) => !open)}
+            >
+              {panelOpen ? (
+                <PanelRightClose size={14} />
+              ) : (
+                <PanelRightOpen size={14} />
+              )}
+              {panelOpen ? "작업 패널 접기" : "작업 패널 펼치기"}
+            </button>
           </div>
           {readingError && <Notice>{readingError}</Notice>}
           {positionNotice && <Notice>{positionNotice}</Notice>}
@@ -234,6 +251,12 @@ export function ReaderPage({ id }: { id: string }) {
               activeAnchor={activeAnchor}
               onTextHover={sourceHovered}
               hoverTargets={panel === "translation" ? hoverTargets : []}
+              onPageStep={(direction) => {
+                const next = page + direction;
+                if (next < 1 || !pages || next > pages) return false;
+                setPage(next);
+                return true;
+              }}
             />
           ) : (
             <Empty title="원문이 아직 연결되지 않았어요">
@@ -242,7 +265,11 @@ export function ReaderPage({ id }: { id: string }) {
             </Empty>
           )}
         </section>
-        <aside className="reader-panel">
+        <aside
+          className="reader-panel"
+          id="reader-work-panel"
+          aria-hidden={!panelOpen}
+        >
           <div className="tabs">
             {(
               [

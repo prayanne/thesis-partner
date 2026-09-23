@@ -133,6 +133,79 @@ test.describe(`PDF ${browserName}`, () => {
           .evaluate((el) => el.getBoundingClientRect().width),
       )
       .toBeCloseTo(width * 1.5, 0);
+    const topScroll = page.getByLabel("PDF 가로 스크롤");
+    await expect(topScroll).toBeVisible();
+    expect(
+      await topScroll.evaluate(
+        (element) => element.scrollWidth > element.clientWidth,
+      ),
+    ).toBe(true);
+    const maxHorizontalScroll = await topScroll.evaluate(
+      (element) => element.scrollWidth - element.clientWidth,
+    );
+    const middleHorizontalScroll = maxHorizontalScroll / 2;
+    await topScroll.evaluate((element, position) => {
+      element.scrollLeft = position;
+      element.dispatchEvent(new Event("scroll"));
+    }, middleHorizontalScroll);
+    await expect
+      .poll(() =>
+        page
+          .locator(".pdf-scroll")
+          .evaluate((element) => element.scrollLeft)
+          .then((position) => Math.abs(position - middleHorizontalScroll)),
+      )
+      .toBeLessThanOrEqual(1);
+    await page.locator(".pdf-scroll").evaluate((element, position) => {
+      element.scrollLeft = position;
+      element.dispatchEvent(new Event("scroll"));
+    }, maxHorizontalScroll);
+    await expect
+      .poll(() =>
+        topScroll
+          .evaluate((element) => element.scrollLeft)
+          .then((position) => Math.abs(position - maxHorizontalScroll)),
+      )
+      .toBeLessThanOrEqual(1);
+    const openViewerWidth = await page
+      .locator(".pdf-column")
+      .evaluate((element) => element.getBoundingClientRect().width);
+    await page
+      .getByRole("button", { name: "작업 패널 접기", exact: true })
+      .click();
+    await expect(page.locator(".reader-panel")).toBeHidden();
+    await expect
+      .poll(() =>
+        page
+          .locator(".pdf-column")
+          .evaluate((element) => element.getBoundingClientRect().width),
+      )
+      .toBeGreaterThan(openViewerWidth * 1.25);
+    await mkdir("test-results/pdf-browser", { recursive: true });
+    await page.screenshot({
+      path: `test-results/pdf-browser/${browserName}-wide.png`,
+    });
+    await page
+      .getByRole("button", { name: "작업 패널 펼치기", exact: true })
+      .click();
+    await expect(page.locator(".reader-panel")).toBeVisible();
+    const pdfScroll = page.locator(".pdf-scroll");
+    await pdfScroll.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+    await pdfScroll.dispatchEvent("wheel", { deltaY: 500 });
+    await expect(page.getByLabel("페이지 번호", { exact: true })).toHaveValue(
+      "2",
+    );
+    await rendered(page, 2);
+    await pdfScroll.evaluate((element) => {
+      element.scrollTop = 0;
+    });
+    await pdfScroll.dispatchEvent("wheel", { deltaY: -500 });
+    await expect(page.getByLabel("페이지 번호", { exact: true })).toHaveValue(
+      "1",
+    );
+    await rendered(page, 1);
     await page
       .getByRole("button", { name: "다음 페이지", exact: true })
       .click();
@@ -162,7 +235,6 @@ test.describe(`PDF ${browserName}`, () => {
     await expect(
       page.getByRole("button", { name: "하이라이트 저장", exact: true }),
     ).toBeEnabled();
-    await mkdir("test-results/pdf-browser", { recursive: true });
     await page.screenshot({
       path: `test-results/pdf-browser/${browserName}.png`,
     });
