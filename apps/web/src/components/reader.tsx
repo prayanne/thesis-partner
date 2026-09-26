@@ -36,6 +36,11 @@ type Panel = "translation" | "summary" | "chat" | "notes";
 export function ReaderPage({ id }: { id: string }) {
   const paper = useResource<Paper>(`/papers/${id}`);
   const [page, setPage] = useState(1);
+  const [pageRequest, setPageRequest] = useState({ pageNumber: 1, serial: 0 });
+  const navigateTo = useCallback((pageNumber: number) => {
+    setPage(pageNumber);
+    setPageRequest((old) => ({ pageNumber, serial: old.serial + 1 }));
+  }, []);
   const [pages, setPages] = useState(0);
   const [scale, setScale] = useState(1);
   const [panel, setPanel] = useState<Panel>("translation");
@@ -98,7 +103,7 @@ export function ReaderPage({ id }: { id: string }) {
         (!saved.paperRevisionId ||
           saved.paperRevisionId === paper.data?.currentRevisionId)
       ) {
-        setPage(saved.pageNumber || 1);
+        navigateTo(saved.pageNumber || 1);
         setScale(saved.scale || 1);
       } else {
         setScale(readerConfig.data?.reading.scale ?? 1);
@@ -113,6 +118,7 @@ export function ReaderPage({ id }: { id: string }) {
     restored,
     paper.loading,
     paper.data?.currentRevisionId,
+    navigateTo,
   ]);
   const selectionChanged = useCallback(
     (value: PdfSelection | null) => setSelection(value),
@@ -175,7 +181,7 @@ export function ReaderPage({ id }: { id: string }) {
               className="icon-button"
               aria-label="이전 페이지"
               disabled={page <= 1}
-              onClick={() => setPage((p) => p - 1)}
+              onClick={() => navigateTo(page - 1)}
             >
               <ChevronLeft size={16} />
             </button>
@@ -188,7 +194,7 @@ export function ReaderPage({ id }: { id: string }) {
               value={page}
               onChange={(e) => {
                 const v = Number(e.target.value);
-                if (Number.isInteger(v) && v >= 1 && v <= pages) setPage(v);
+                if (Number.isInteger(v) && v >= 1 && v <= pages) navigateTo(v);
               }}
             />
             <span>/ {pages || "—"}</span>
@@ -196,7 +202,7 @@ export function ReaderPage({ id }: { id: string }) {
               className="icon-button"
               aria-label="다음 페이지"
               disabled={!pages || page >= pages}
-              onClick={() => setPage((p) => p + 1)}
+              onClick={() => navigateTo(page + 1)}
             >
               <ChevronRight size={16} />
             </button>
@@ -240,23 +246,19 @@ export function ReaderPage({ id }: { id: string }) {
           {positionNotice && <Notice>{positionNotice}</Notice>}
           {revision ? (
             <PdfViewer
+              key={`${id}:${revision}`}
               paperId={id}
               revisionId={revision}
               pageNumber={page}
               scale={scale}
-              segments={listOf(segments.data)}
+              pageRequest={pageRequest}
+              onPageChange={setPage}
               annotations={listOf(annotations.data)}
               onPages={setPages}
               onSelection={selectionChanged}
               activeAnchor={activeAnchor}
               onTextHover={sourceHovered}
               hoverTargets={panel === "translation" ? hoverTargets : []}
-              onPageStep={(direction) => {
-                const next = page + direction;
-                if (next < 1 || !pages || next > pages) return false;
-                setPage(next);
-                return true;
-              }}
             />
           ) : (
             <Empty title="원문이 아직 연결되지 않았어요">
@@ -296,7 +298,7 @@ export function ReaderPage({ id }: { id: string }) {
                 selection={selection}
                 annotations={annotations}
                 navigate={(anchor) => {
-                  setPage(anchor.pageNumber);
+                  navigateTo(anchor.pageNumber);
                   setActiveAnchor(anchor);
                 }}
               />
