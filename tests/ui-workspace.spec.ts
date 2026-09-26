@@ -419,28 +419,34 @@ test("real PDF selection persists exact source ranges and scales highlight geome
   await expect(page.getByLabel("페이지 번호", { exact: true })).toBeEnabled();
   await page.getByLabel("페이지 번호", { exact: true }).fill("1");
   await page.getByLabel("PDF 확대 비율").selectOption("1");
-  await expect(page.locator(".pdf-stage")).toBeVisible();
+  await expect(page.locator('.pdf-stage[data-page-number="1"]')).toBeVisible();
   await expect(page.locator(".textLayer span").first()).toBeAttached();
   await expect(page.locator(".state.loading")).toHaveCount(0);
-  await expect(page.locator(".textLayer")).toContainText("Trace-based");
-  const selection = await page.locator(".textLayer").evaluate((layer) => {
-    const span = Array.from(layer.querySelectorAll("span")).find(
-      (s) =>
-        s.firstChild?.nodeType === Node.TEXT_NODE &&
-        (s.textContent ?? "").startsWith("Trace-based"),
-    );
-    if (!span || !span.firstChild)
-      throw new Error("Expected real PDF title text");
-    const range = document.createRange();
-    range.setStart(span.firstChild, 0);
-    range.setEnd(span.firstChild, 11);
-    const selected = window.getSelection()!;
-    selected.removeAllRanges();
-    selected.addRange(range);
-    return range.toString();
-  });
+  await expect(
+    page.locator('.pdf-stage[data-page-number="1"] .textLayer'),
+  ).toContainText("Trace-based");
+  const selection = await page
+    .locator('.pdf-stage[data-page-number="1"] .textLayer')
+    .evaluate((layer) => {
+      const span = Array.from(layer.querySelectorAll("span")).find(
+        (s) =>
+          s.firstChild?.nodeType === Node.TEXT_NODE &&
+          (s.textContent ?? "").startsWith("Trace-based"),
+      );
+      if (!span || !span.firstChild)
+        throw new Error("Expected real PDF title text");
+      const range = document.createRange();
+      range.setStart(span.firstChild, 0);
+      range.setEnd(span.firstChild, 11);
+      const selected = window.getSelection()!;
+      selected.removeAllRanges();
+      selected.addRange(range);
+      return range.toString();
+    });
   expect(selection).toBe("Trace-based");
-  await page.locator(".pdf-stage").dispatchEvent("mouseup");
+  await page
+    .locator('.pdf-stage[data-page-number="1"]')
+    .dispatchEvent("mouseup");
   await page.getByRole("button", { name: "메모", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "하이라이트 저장", exact: true }),

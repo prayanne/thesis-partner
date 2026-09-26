@@ -232,6 +232,17 @@ test("synthetic word links highlight both directions with exact PDF geometry and
   const originalOverlay = (await overlay.boundingBox())!;
   for (const key of ["x", "y", "width", "height"] as const)
     expect(originalOverlay[key]).toBeCloseTo(originalRect[key], 0);
+  // Scrolling clears transient hover; the same source word can be hovered again.
+  await page.locator(".pdf-scroll").evaluate((element) => {
+    element.scrollTop += 20;
+  });
+  await expect(overlay).toHaveCount(0);
+  const movedRect = await sourceWordRect();
+  await page.mouse.move(
+    movedRect.x + movedRect.width / 2,
+    movedRect.y + movedRect.height / 2,
+  );
+  await expect(overlay).toBeVisible();
   await page.getByLabel("PDF 확대 비율").selectOption("1.5");
   await expect(page.locator(".pdf-scroll .state.loading")).toHaveCount(0);
   await expect(overlay).toHaveCount(0);

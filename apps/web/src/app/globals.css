@@ -1458,6 +1458,7 @@ hr {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   background: #e9ece6;
 }
 .reader-controls {
@@ -1506,11 +1507,61 @@ hr {
   height: 1px;
 }
 .pdf-scroll {
-  overflow: auto;
+  overflow: auto scroll;
   flex: 1;
-  padding: 27px 20px 50px;
+  min-height: 0;
   position: relative;
   overscroll-behavior: contain;
+  overflow-anchor: none;
+  scrollbar-color: #87937f #e0e5db;
+}
+.pdf-scroll::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+.pdf-scroll::-webkit-scrollbar-track {
+  background: #e0e5db;
+}
+.pdf-scroll::-webkit-scrollbar-thumb {
+  background: #87937f;
+  border: 3px solid #e0e5db;
+  border-radius: 8px;
+}
+.pdf-document {
+  position: relative;
+  min-width: 100%;
+}
+.pdf-page-slot {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.pdf-page-label {
+  height: 24px;
+  line-height: 24px;
+  text-align: center;
+  font-size: 11px;
+  color: #57614f;
+}
+.pdf-page-paper {
+  background: white;
+  box-shadow: 0 4px 20px #29332219;
+}
+.pdf-page-content {
+  position: relative;
+  height: 100%;
+}
+.pdf-page-content > .state {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+}
+.pdf-page-content > .notice {
+  position: absolute;
+  inset: auto 12px 12px;
+  z-index: 4;
+  margin: 0;
+  pointer-events: none;
 }
 .pdf-stage {
   position: relative;
@@ -1923,6 +1974,7 @@ hr {
     overflow: auto;
   }
   .pdf-column {
+    height: 70vh;
     min-height: 65vh;
     max-height: 75vh;
     flex-shrink: 0;
